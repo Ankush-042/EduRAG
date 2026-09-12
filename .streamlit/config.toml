@@ -1,0 +1,11 @@
+# Light mode only — non-negotiable per UI/UX spec Doc 3 sec 2.1 / 26.
+[theme]
+base = "light"
+primaryColor = "#2F5D50"
+backgroundColor = "#FDFCFA"
+secondaryBackgroundColor = "#F4F1EC"
+textColor = "#1F1F1F"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false

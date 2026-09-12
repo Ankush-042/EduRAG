@@ -1,0 +1,14 @@
+streamlit>=1.38
+pydantic>=2.7
+pydantic-settings>=2.4
+sqlalchemy>=2.0
+alembic>=1.13
+qdrant-client>=1.10
+rank-bm25>=0.2.2
+sentence-transformers>=3.0
+faster-whisper>=1.0
+yt-dlp>=2024.8.6
+ffmpeg-python>=0.2.0
+groq>=0.9
+python-dotenv>=1.0
+tenacity>=8.5
