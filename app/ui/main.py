@@ -37,7 +37,7 @@ STATUS_LABELS = {
     "EXTRACTING": "Extracting audio",
     "TRANSCRIBING": "Transcribing",
     "PROCESSING": "Structuring content",
-    "INDEXING": "Awaiting embeddings & indexing (Sprint 4)",
+    "INDEXING": "Embedding & indexing",
     "READY": "Ready",
     "FAILED": "Couldn't process this source",
     "CANCELLED": "Cancelled",
@@ -190,13 +190,19 @@ def render_source_list(session_id: str) -> None:
                         except (OSError, json.JSONDecodeError, KeyError) as exc:
                             st.caption(f"Couldn't load transcript preview: {exc}")
 
-            # Sprint 3 proof-of-work: once structuring has actually run,
-            # show how many chunks came out of it.
+            # Sprint 3/4 proof-of-work: once structuring has actually run,
+            # show how many chunks came out of it -- and once indexing has
+            # actually completed (READY), that they're searchable, not
+            # just chunked.
             if source.status in _STRUCTURED_STATUSES:
                 with SessionLocal() as db:
                     chunk_count = content_repository.count_chunks_for_source(db, source.id)
                 if chunk_count:
-                    st.caption(f"{chunk_count} chunk{'s' if chunk_count != 1 else ''} ready for indexing")
+                    plural = "s" if chunk_count != 1 else ""
+                    if source.status == "READY":
+                        st.caption(f"{chunk_count} chunk{plural} indexed and searchable")
+                    else:
+                        st.caption(f"{chunk_count} chunk{plural} ready for indexing")
 
 
 def main() -> None:

@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/edurag.db"
 
     # --- Vector store ---------------------------------------------------
+    # Embedded/local Qdrant (a path on disk, not a server) is the default —
+    # zero external service to run, same "consumer-laptop feasible" call
+    # already made for SQLite over Postgres (PRD Doc 1 sec 36). qdrant_url
+    # is kept for later production deployments against a real Qdrant
+    # server (a one-line swap, per the model-abstraction principle above);
+    # it's simply unused while qdrant_path is set, which is the only mode
+    # this MVP actually exercises.
+    qdrant_path: str = "./data/qdrant"
     qdrant_url: str = "http://localhost:6333"
     qdrant_collection: str = "edurag_chunks"
 

@@ -1,16 +1,16 @@
 """Sprint 1 — source ingestion: validation, download, audio extraction, and
 the state-machine transitions from TRD Doc 2 sec 40 / Data spec Doc 4 sec 7:
 
-    QUEUED -> DOWNLOADING -> EXTRACTING -> TRANSCRIBING -> PROCESSING -> INDEXING -> ...
+    QUEUED -> DOWNLOADING -> EXTRACTING -> TRANSCRIBING -> PROCESSING -> INDEXING -> READY
 
 This module drives sources through download/save + audio extraction, then
-straight into transcription (Sprint 2) and content structuring (Sprint 3)
-— there's no background job queue in this MVP (Doc 6 authority: no Celery/
-Redis), so the full pipeline runs synchronously per add_*_source call and
-lands the source in INDEXING, ready for Sprint 4 (contextual enrichment,
-embeddings, indexing). Every step is wrapped so a failure lands the
-source in FAILED with a readable error_message rather than leaving it
-stuck (TRD Doc 2 sec 24).
+straight into transcription (Sprint 2), content structuring (Sprint 3),
+and indexing (Sprint 4) — there's no background job queue in this MVP
+(Doc 6 authority: no Celery/Redis), so the full pipeline runs
+synchronously per add_*_source call and lands the source in READY,
+searchable by the retrieval pipeline Sprint 5 builds. Every step is
+wrapped so a failure lands the source in FAILED with a readable
+error_message rather than leaving it stuck (TRD Doc 2 sec 24).
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from app.core.config import get_settings
 from app.db.models.source import Source
 from app.db.repositories import processing_job_repository as jobs
 from app.db.repositories import source_repository as sources
+from app.services.indexing import index_source
 from app.services.structuring import structure_source
 from app.services.transcription import normalize_language_hint, transcribe_source
 
@@ -109,6 +110,7 @@ class SourceIngestionService:
             self._extract_audio(source, job)
             transcribe_source(self.db, source, job)
             structure_source(self.db, source, job)
+            index_source(self.db, source, job)
             jobs.complete_job(self.db, job)
         except Exception as exc:  # noqa: BLE001 — deliberately broad: any
             # failure here must land the source in FAILED, never half-done.
@@ -133,9 +135,20 @@ class SourceIngestionService:
             "no_warnings": True,
             "noplaylist": True,
         }
-        # Optional auth for videos where YouTube serves its bot-check to
-        # yt-dlp (see config.py) — a no-op (and no extra dependency) when
-        # neither is configured, since most videos never hit this.
+        # NOTE: deliberately NOT forcing a specific player_client (e.g.
+        # "tv") here. That was tried and reverted -- YouTube's tv client
+        # extraction is itself in an actively broken state right now
+        # (yt-dlp issue #17389, "tv_downgraded ... UNPLAYABLE"), so forcing
+        # it can turn a video that would download fine on yt-dlp's own
+        # default client selection into a hard failure. yt-dlp's current
+        # default already includes its own client-fallback logic (per the
+        # maintainers, it "doesn't solely rely on tv_downgraded ... isn't
+        # anymore"), and un-restricted videos are reported to typically
+        # work with zero special config. Cookies remain the one thing this
+        # app forces explicitly, and only when configured, because they're
+        # the one mechanism that's actually necessary for genuinely
+        # age-/login-restricted content rather than a workaround for a
+        # moving target.
         if settings.youtube_cookies_from_browser:
             ydl_opts["cookiesfrombrowser"] = (settings.youtube_cookies_from_browser,)
         elif settings.youtube_cookies_file:
@@ -155,13 +168,14 @@ class SourceIngestionService:
                 # without changing anything else about the request.
                 hint = " (this is usually an outdated yt-dlp — try: python -m pip install -U yt-dlp, then retry)"
             elif "Sign in to confirm" in exc_str or "not a bot" in exc_str:
-                # YouTube's bot-check, not an account/permissions problem.
-                # Fixable per-video by setting YOUTUBE_COOKIES_FROM_BROWSER
-                # (or YOUTUBE_COOKIES_FILE) in .env to a browser that's
-                # already logged into YouTube — see config.py/.env.example.
+                # YouTube's bot-check. The "tv" client fallback above
+                # already tries to avoid this without cookies — seeing it
+                # anyway means this specific video/IP needs real account
+                # cookies. Set YOUTUBE_COOKIES_FROM_BROWSER (or
+                # YOUTUBE_COOKIES_FILE) in .env — see .env.example.
                 hint = (
-                    " (YouTube is bot-checking this request — set "
-                    "YOUTUBE_COOKIES_FROM_BROWSER=chrome (or your browser) in .env, "
+                    " (YouTube is bot-checking this request even via the TV client — "
+                    "set YOUTUBE_COOKIES_FROM_BROWSER or YOUTUBE_COOKIES_FILE in .env, "
                     "restart the app, and retry — see .env.example)"
                 )
             raise IngestionError(f"Could not download the video: {exc}{hint}") from exc
@@ -206,6 +220,7 @@ class SourceIngestionService:
             self._extract_audio(source, job)
             transcribe_source(self.db, source, job)
             structure_source(self.db, source, job)
+            index_source(self.db, source, job)
             jobs.complete_job(self.db, job)
         except Exception as exc:  # noqa: BLE001
             sources.update_source_status(self.db, source, "FAILED", error_message=str(exc))

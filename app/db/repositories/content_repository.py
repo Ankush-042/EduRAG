@@ -5,6 +5,7 @@ service, matching the split already used for sources/jobs/sessions."""
 from sqlalchemy.orm import Session as DbSession
 
 from app.db.models.content import Chunk, Section, Sentence
+from app.db.models.source import Source
 
 
 def create_section(
@@ -91,5 +92,41 @@ def list_chunks_for_source(db: DbSession, source_id: str) -> list[Chunk]:
         db.query(Chunk)
         .filter(Chunk.source_id == source_id)
         .order_by(Chunk.chunk_order.asc())
+        .all()
+    )
+
+
+def get_section(db: DbSession, section_id: str) -> Section | None:
+    return db.get(Section, section_id)
+
+
+def set_chunk_embedding(
+    db: DbSession,
+    chunk: Chunk,
+    *,
+    contextualized_text: str,
+    embedding_model: str,
+    embedding_dimension: int,
+) -> Chunk:
+    chunk.contextualized_text = contextualized_text
+    chunk.embedding_model = embedding_model
+    chunk.embedding_dimension = embedding_dimension
+    db.flush()
+    return chunk
+
+
+def list_chunks_for_session(db: DbSession, session_id: str) -> list[Chunk]:
+    """All chunks across every (non-deleted) source in a session — the
+    corpus a session's BM25/sparse index is built over. A join rather than
+    a session_id column on Chunk itself: sections/chunks/sentences already
+    key off source_id only (Data spec Doc 4 sec 5), and session isolation
+    (sec 24) is enforced at the Source level everywhere else in this
+    codebase too — duplicating session_id onto every content table would
+    just be another place for it to drift out of sync."""
+    return (
+        db.query(Chunk)
+        .join(Source, Chunk.source_id == Source.id)
+        .filter(Source.session_id == session_id, Source.status != "DELETED")
+        .order_by(Chunk.source_id.asc(), Chunk.chunk_order.asc())
         .all()
     )

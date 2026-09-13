@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 venv/
 .env
+cookies.txt
 *.db
 *.sqlite3
 /data/
