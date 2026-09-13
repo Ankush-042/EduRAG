@@ -1,18 +1,15 @@
 """Persistence for the temporary, no-login session (Data spec Doc 4 sec 6).
 One row per browser session; everything else hangs off session_id."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
 from sqlalchemy.orm import Session as DbSession
 
 from app.core.config import get_settings
+from app.db.base import _utcnow
 from app.db.models.session import SessionModel
 
 settings = get_settings()
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def create_session(db: DbSession) -> SessionModel:

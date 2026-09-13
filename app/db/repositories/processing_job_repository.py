@@ -1,15 +1,10 @@
 """Persistence for processing_jobs — the state-machine bookkeeping the UI
 reads to show real per-stage progress (UI/UX spec Doc 3 sec 10-11)."""
 
-from datetime import datetime, timezone
-
 from sqlalchemy.orm import Session as DbSession
 
+from app.db.base import _utcnow
 from app.db.models.processing import ProcessingJob
-
-
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
 
 
 def create_job(db: DbSession, *, source_id: str, job_type: str) -> ProcessingJob:

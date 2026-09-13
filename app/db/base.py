@@ -12,7 +12,17 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    """Naive UTC, deliberately — not tz-aware. SQLite (our default DB, see
+    app/core/config.py) has no real datetime type: DateTime(timezone=True)
+    round-trips as a naive datetime once read back from a row, no matter
+    what tzinfo it was written with. If this returned an aware datetime,
+    any comparison against a value freshly loaded from the DB (e.g. an
+    expiry check on a session created in an earlier run) would crash with
+    "can't compare offset-naive and offset-aware datetimes" the moment the
+    two sides came from different origins. Staying naive-UTC everywhere
+    sidesteps that regardless of backend; the column keeps timezone=True
+    since that's still correct if this ever points at real Postgres."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def new_uuid() -> str:
