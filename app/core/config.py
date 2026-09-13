@@ -45,6 +45,13 @@ class Settings(BaseSettings):
     max_retrieval_candidates: int = 30
     top_k_evidence: int = 6
 
+    # --- Content structuring (Sprint 3) -----------------------------------
+    # Target words per chunk -- sentences (ASR segments) are packed into a
+    # chunk until adding the next one would exceed this, never splitting a
+    # sentence across chunks. ~180 words is a common small-to-big sweet
+    # spot; revisit if the eval set (Sprint 11) says otherwise.
+    chunk_target_words: int = 180
+
     # --- Session ----------------------------------------------------------
     session_ttl_hours: int = 6
 

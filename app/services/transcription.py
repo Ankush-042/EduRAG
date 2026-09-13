@@ -34,7 +34,9 @@ settings = get_settings()
 
 # Loaded models are expensive (seconds to load, hundreds of MB) — cache by
 # size so re-transcribing within the same process reuses the same model.
-_MODEL_CACHE: dict[str, object] = {}
+# Value is (model, device_actually_used) — the device matters for the
+# inference-time fallback in WhisperTranscriber.transcribe below.
+_MODEL_CACHE: dict[str, tuple[object, str]] = {}
 
 
 class TranscriptionError(Exception):
@@ -47,19 +49,39 @@ def _model_size(asr_model_spec: str) -> str:
     return asr_model_spec.split(":", 1)[1] if ":" in asr_model_spec else asr_model_spec
 
 
-def _load_model(size: str):
-    if size not in _MODEL_CACHE:
-        try:
-            from faster_whisper import WhisperModel
-        except ImportError as exc:
-            raise TranscriptionError(
-                "faster-whisper is not installed (pip install -r requirements.txt)."
-            ) from exc
-        # CPU + int8: the "consumer laptop feasible" constraint (PRD Doc 1
-        # sec 36) applies to the ASR model choice as much as it did to the
-        # SQLite default in app/core/config.py — no CUDA setup required.
-        _MODEL_CACHE[size] = WhisperModel(size, device="cpu", compute_type="int8")
-    return _MODEL_CACHE[size]
+def _build_model(size: str, device: str, compute_type: str):
+    from faster_whisper import WhisperModel
+
+    return WhisperModel(size, device=device, compute_type=compute_type)
+
+
+def _get_model(size: str) -> tuple[object, str]:
+    """GPU-first, CPU-always-works fallback. The "consumer laptop
+    feasible" constraint (PRD Doc 1 sec 36) means CPU has to work with
+    zero setup, but a discrete NVIDIA GPU should get used automatically
+    when one's actually present and usable — no config flag to flip,
+    since a wrong guess there just means another support round-trip.
+    float16 on GPU, int8 on CPU: the usual speed/VRAM-appropriate choice
+    for each. Falls back silently rather than failing the source: a GPU
+    can be visible but still unusable (CUDA/cuDNN runtime not installed),
+    and that failure mode is common enough on Windows to plan for."""
+    if size in _MODEL_CACHE:
+        return _MODEL_CACHE[size]
+
+    try:
+        import faster_whisper  # noqa: F401 — import check only
+    except ImportError as exc:
+        raise TranscriptionError(
+            "faster-whisper is not installed (pip install -r requirements.txt)."
+        ) from exc
+
+    try:
+        result = (_build_model(size, "cuda", "float16"), "cuda")
+    except Exception:
+        result = (_build_model(size, "cpu", "int8"), "cpu")
+
+    _MODEL_CACHE[size] = result
+    return result
 
 
 def _normalize_text(text: str) -> str:
@@ -92,24 +114,40 @@ class WhisperTranscriber(Transcriber):
         self._size = _model_size(model_spec)
 
     def transcribe(self, audio_path: str, language: str | None = None) -> Transcript:
-        model = _load_model(self._size)
         language = normalize_language_hint(language)
+        model, device = _get_model(self._size)
 
         try:
-            segments, info = self._run(model, audio_path, language)
+            segments, info = self._run_with_language_fallback(model, audio_path, language)
+        except Exception as exc:
+            if device != "cuda":
+                raise TranscriptionError(f"Transcription failed: {exc}") from exc
+            # The GPU model *loaded* fine but failed on actual inference --
+            # CUDA/cuDNN libraries are often loaded lazily on first use, so
+            # a missing-runtime problem frequently surfaces here rather
+            # than at construction. Fall back to CPU once, permanently for
+            # this process (re-tried on every future source too), instead
+            # of failing every source that comes after this one.
+            model = _build_model(self._size, "cpu", "int8")
+            _MODEL_CACHE[self._size] = (model, "cpu")
+            try:
+                segments, info = self._run_with_language_fallback(model, audio_path, language)
+            except Exception as retry_exc:
+                raise TranscriptionError(f"Transcription failed: {retry_exc}") from retry_exc
+
+        return Transcript(language=info.language, segments=segments)
+
+    def _run_with_language_fallback(self, model, audio_path: str, language: str | None):
+        try:
+            return self._run(model, audio_path, language)
         except ValueError as exc:
             if language is not None and "not a valid language code" in str(exc):
                 # The normalized hint still wasn't one faster-whisper
                 # recognizes (a handful of yt-dlp/locale codes don't map
                 # 1:1 onto Whisper's list) — auto-detect rather than
                 # failing the whole source over a metadata quirk.
-                segments, info = self._run(model, audio_path, None)
-            else:
-                raise TranscriptionError(f"Transcription failed: {exc}") from exc
-        except Exception as exc:  # faster-whisper/ctranslate2 raise their own types
-            raise TranscriptionError(f"Transcription failed: {exc}") from exc
-
-        return Transcript(language=info.language, segments=segments)
+                return self._run(model, audio_path, None)
+            raise
 
     @staticmethod
     def _run(model, audio_path: str, language: str | None):

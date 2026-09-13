@@ -26,7 +26,7 @@ import streamlit as st
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
 from app.db import models  # noqa: F401  (registers tables before create_all)
-from app.db.repositories import session_repository, source_repository
+from app.db.repositories import content_repository, session_repository, source_repository
 from app.services.ingestion import IngestionError, SourceIngestionService, UploadedFile
 
 st.set_page_config(page_title="EduRAG", page_icon=None, layout="centered")
@@ -36,8 +36,8 @@ STATUS_LABELS = {
     "DOWNLOADING": "Downloading",
     "EXTRACTING": "Extracting audio",
     "TRANSCRIBING": "Transcribing",
-    "PROCESSING": "Awaiting content structuring (Sprint 3)",
-    "INDEXING": "Indexing",
+    "PROCESSING": "Structuring content",
+    "INDEXING": "Awaiting embeddings & indexing (Sprint 4)",
     "READY": "Ready",
     "FAILED": "Couldn't process this source",
     "CANCELLED": "Cancelled",
@@ -46,6 +46,10 @@ STATUS_LABELS = {
 # Statuses reached only after transcription has actually completed —
 # safe to look for a transcript artifact at these stages.
 _TRANSCRIBED_STATUSES = {"PROCESSING", "INDEXING", "READY"}
+
+# Statuses reached only after content structuring has actually completed —
+# safe to look for chunks at these stages.
+_STRUCTURED_STATUSES = {"INDEXING", "READY"}
 
 
 def _ensure_schema() -> None:
@@ -182,6 +186,14 @@ def render_source_list(session_id: str) -> None:
                             st.write(preview_text[:1500] + ("…" if len(preview_text) > 1500 else ""))
                         except (OSError, json.JSONDecodeError, KeyError) as exc:
                             st.caption(f"Couldn't load transcript preview: {exc}")
+
+            # Sprint 3 proof-of-work: once structuring has actually run,
+            # show how many chunks came out of it.
+            if source.status in _STRUCTURED_STATUSES:
+                with SessionLocal() as db:
+                    chunk_count = content_repository.count_chunks_for_source(db, source.id)
+                if chunk_count:
+                    st.caption(f"{chunk_count} chunk{'s' if chunk_count != 1 else ''} ready for indexing")
 
 
 def main() -> None:
