@@ -78,9 +78,14 @@ class SentenceTransformerEmbedder(Embedder):
         to create the Qdrant collection with the right size (Qdrant
         rejects vectors that don't match a collection's declared
         dimension). Cheap: sentence-transformers models publish this
-        without needing to actually embed anything."""
+        without needing to actually embed anything.
+
+        get_embedding_dimension() is the current sentence-transformers
+        method name; get_sentence_embedding_dimension() (the name used
+        here previously) still works but is deprecated as of
+        sentence-transformers 6.x and logs a FutureWarning on every call."""
         model = _get_model(self._model_name)
-        return int(model.get_sentence_embedding_dimension())
+        return int(model.get_embedding_dimension())
 
 
 def get_embedder() -> SentenceTransformerEmbedder:
