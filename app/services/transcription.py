@@ -51,17 +51,27 @@ def _register_nvidia_dll_dirs() -> None:
     tries to load. A no-op wherever those packages aren't installed (or
     on non-Windows, where this isn't needed) — CPU fallback still works
     either way, so this never blocks anything, it only unlocks GPU when
-    the pieces are actually there."""
+    the pieces are actually there.
+
+    nvidia.nvjitlink is included too: since CUDA 12.x, cublas64_12.dll
+    itself depends on nvJitLink64_*.dll (a JIT-linking library that got
+    split out into its own package, nvidia-nvjitlink-cu12) — without it,
+    Windows fails to resolve cublas64_12.dll's own dependency and
+    ctranslate2 reports this as "cublas64_12.dll is not found or cannot
+    be loaded", even though the file is sitting right there and its own
+    directory is correctly registered. This is a well-known gotcha for
+    every pip-installed CUDA 12 GPU project on Windows, not specific to
+    this codebase."""
     if sys.platform != "win32":
         return
     import importlib.util
 
-    for pkg in ("nvidia.cublas", "nvidia.cudnn"):
+    for pkg in ("nvidia.cublas", "nvidia.cudnn", "nvidia.nvjitlink"):
         try:
             spec = importlib.util.find_spec(pkg)
         except (ImportError, ValueError) as exc:
             print(f"[EduRAG] {pkg}: not found ({exc}) — GPU inference needs "
-                  f"'python -m pip install --user nvidia-cublas-cu12 nvidia-cudnn-cu12'")
+                  f"'python -m pip install --user nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-nvjitlink-cu12'")
             continue
         if not spec or not spec.submodule_search_locations:
             print(f"[EduRAG] {pkg}: import machinery has no spec/location for it — "
