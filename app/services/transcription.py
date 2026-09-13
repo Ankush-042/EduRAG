@@ -59,17 +59,24 @@ def _register_nvidia_dll_dirs() -> None:
     for pkg in ("nvidia.cublas", "nvidia.cudnn"):
         try:
             spec = importlib.util.find_spec(pkg)
-        except (ImportError, ValueError):
+        except (ImportError, ValueError) as exc:
+            print(f"[EduRAG] {pkg}: not found ({exc}) — GPU inference needs "
+                  f"'python -m pip install --user nvidia-cublas-cu12 nvidia-cudnn-cu12'")
             continue
         if not spec or not spec.submodule_search_locations:
+            print(f"[EduRAG] {pkg}: import machinery has no spec/location for it — "
+                  f"is it actually installed for this same 'python'?")
             continue
         for location in spec.submodule_search_locations:
             dll_dir = Path(location) / "bin"
-            if dll_dir.is_dir():
-                try:
-                    os.add_dll_directory(str(dll_dir))
-                except OSError:
-                    pass
+            if not dll_dir.is_dir():
+                print(f"[EduRAG] {pkg}: found package at {location} but no bin/ subfolder there")
+                continue
+            try:
+                os.add_dll_directory(str(dll_dir))
+                print(f"[EduRAG] {pkg}: registered DLL directory {dll_dir}")
+            except OSError as exc:
+                print(f"[EduRAG] {pkg}: found {dll_dir} but could not register it ({exc})")
 
 
 _register_nvidia_dll_dirs()
