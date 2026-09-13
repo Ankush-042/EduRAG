@@ -70,6 +70,19 @@ def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def normalize_language_hint(language: str | None) -> str | None:
+    """Source metadata (e.g. yt-dlp's reported language) comes back as
+    locale-style codes like "en-US" or "pt-BR", but faster-whisper only
+    accepts its own short list of bare ISO 639-1 codes ("en") and raises
+    ValueError on anything else. Take just the base subtag; if there's
+    nothing usable, return None and let Whisper auto-detect instead of
+    guessing wrong."""
+    if not language:
+        return None
+    base = re.split(r"[-_]", language, maxsplit=1)[0].strip().lower()
+    return base or None
+
+
 class WhisperTranscriber(Transcriber):
     """Concrete Transcriber (app/core/interfaces.py) backed by
     faster-whisper. Swapping ASR engines later means adding another class
@@ -80,23 +93,39 @@ class WhisperTranscriber(Transcriber):
 
     def transcribe(self, audio_path: str, language: str | None = None) -> Transcript:
         model = _load_model(self._size)
+        language = normalize_language_hint(language)
+
         try:
-            segments_iter, info = model.transcribe(
-                audio_path, language=language, word_timestamps=True, vad_filter=True
-            )
-            segments = []
-            for seg in segments_iter:
-                words = [
-                    WordTimestamp(word=w.word.strip(), start=w.start, end=w.end)
-                    for w in (seg.words or [])
-                ]
-                segments.append(
-                    TranscriptSegment(text=seg.text.strip(), start=seg.start, end=seg.end, words=words)
-                )
+            segments, info = self._run(model, audio_path, language)
+        except ValueError as exc:
+            if language is not None and "not a valid language code" in str(exc):
+                # The normalized hint still wasn't one faster-whisper
+                # recognizes (a handful of yt-dlp/locale codes don't map
+                # 1:1 onto Whisper's list) — auto-detect rather than
+                # failing the whole source over a metadata quirk.
+                segments, info = self._run(model, audio_path, None)
+            else:
+                raise TranscriptionError(f"Transcription failed: {exc}") from exc
         except Exception as exc:  # faster-whisper/ctranslate2 raise their own types
             raise TranscriptionError(f"Transcription failed: {exc}") from exc
 
         return Transcript(language=info.language, segments=segments)
+
+    @staticmethod
+    def _run(model, audio_path: str, language: str | None):
+        segments_iter, info = model.transcribe(
+            audio_path, language=language, word_timestamps=True, vad_filter=True
+        )
+        segments = []
+        for seg in segments_iter:
+            words = [
+                WordTimestamp(word=w.word.strip(), start=w.start, end=w.end)
+                for w in (seg.words or [])
+            ]
+            segments.append(
+                TranscriptSegment(text=seg.text.strip(), start=seg.start, end=seg.end, words=words)
+            )
+        return segments, info
 
 
 def _get_transcriber() -> WhisperTranscriber:

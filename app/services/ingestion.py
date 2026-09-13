@@ -26,7 +26,7 @@ from app.core.config import get_settings
 from app.db.models.source import Source
 from app.db.repositories import processing_job_repository as jobs
 from app.db.repositories import source_repository as sources
-from app.services.transcription import transcribe_source
+from app.services.transcription import normalize_language_hint, transcribe_source
 
 settings = get_settings()
 
@@ -149,7 +149,7 @@ class SourceIngestionService:
             duration_seconds=int(info.get("duration") or 0) or None,
             file_size_bytes=media_path.stat().st_size,
             content_hash=content_hash,
-            language=info.get("language"),
+            language=normalize_language_hint(info.get("language")),
         )
         sources.add_artifact(
             self.db,
