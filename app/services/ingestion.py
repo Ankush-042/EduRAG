@@ -133,18 +133,37 @@ class SourceIngestionService:
             "no_warnings": True,
             "noplaylist": True,
         }
+        # Optional auth for videos where YouTube serves its bot-check to
+        # yt-dlp (see config.py) — a no-op (and no extra dependency) when
+        # neither is configured, since most videos never hit this.
+        if settings.youtube_cookies_from_browser:
+            ydl_opts["cookiesfrombrowser"] = (settings.youtube_cookies_from_browser,)
+        elif settings.youtube_cookies_file:
+            ydl_opts["cookiefile"] = settings.youtube_cookies_file
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(source.source_url, download=True)
                 media_path = Path(ydl.prepare_filename(info)).resolve()
         except Exception as exc:  # yt-dlp raises its own exception types
             hint = ""
-            if "403" in str(exc):
+            exc_str = str(exc)
+            if "403" in exc_str:
                 # YouTube regularly changes its throttling/cipher scheme;
                 # this is near-always an out-of-date yt-dlp, not a real
                 # permissions issue, and updating almost always fixes it
                 # without changing anything else about the request.
                 hint = " (this is usually an outdated yt-dlp — try: python -m pip install -U yt-dlp, then retry)"
+            elif "Sign in to confirm" in exc_str or "not a bot" in exc_str:
+                # YouTube's bot-check, not an account/permissions problem.
+                # Fixable per-video by setting YOUTUBE_COOKIES_FROM_BROWSER
+                # (or YOUTUBE_COOKIES_FILE) in .env to a browser that's
+                # already logged into YouTube — see config.py/.env.example.
+                hint = (
+                    " (YouTube is bot-checking this request — set "
+                    "YOUTUBE_COOKIES_FROM_BROWSER=chrome (or your browser) in .env, "
+                    "restart the app, and retry — see .env.example)"
+                )
             raise IngestionError(f"Could not download the video: {exc}{hint}") from exc
 
         if not media_path.exists():

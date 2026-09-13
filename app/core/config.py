@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     # --- Session ----------------------------------------------------------
     session_ttl_hours: int = 6
 
+    # --- YouTube download auth (optional) ---------------------------------
+    # YouTube increasingly serves "Sign in to confirm you're not a bot" to
+    # yt-dlp on some videos/IPs even for public, unrestricted content. Both
+    # are optional and unset by default — most videos don't need either;
+    # set ONE of them (browser cookies are the easier path — just needs to
+    # already be logged into YouTube in that browser) only once a specific
+    # video actually hits the bot-check.
+    #   YOUTUBE_COOKIES_FROM_BROWSER=chrome   (or edge/firefox/brave/...)
+    #   YOUTUBE_COOKIES_FILE=./cookies.txt    (exported via a browser extension)
+    youtube_cookies_from_browser: str = ""
+    youtube_cookies_file: str = ""
+
     # --- Local storage (ingestion artifacts) ------------------------------
     # Never committed (see .gitignore) — original media/audio stay on disk
     # only, per the local-first / no-large-blobs-in-the-DB rule (Data spec
