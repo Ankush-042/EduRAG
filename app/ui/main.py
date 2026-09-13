@@ -26,9 +26,14 @@ import streamlit as st
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
 from app.db import models  # noqa: F401  (registers tables before create_all)
-from app.db.repositories import content_repository, session_repository, source_repository
+from app.db.repositories import (
+    content_repository,
+    conversation_repository,
+    session_repository,
+    source_repository,
+)
+from app.services import answering
 from app.services.ingestion import IngestionError, SourceIngestionService, UploadedFile
-from app.services.retrieval import RetrievalError, retrieve
 
 st.set_page_config(page_title="EduRAG", page_icon=None, layout="centered")
 
@@ -206,13 +211,44 @@ def render_source_list(session_id: str) -> None:
                         st.caption(f"{chunk_count} chunk{plural} ready for indexing")
 
 
+_GROUNDING_LABELS = {
+    "GROUNDED": ("Grounded in your sources", "success"),
+    "PARTIALLY_GROUNDED": ("Partially grounded", "warning"),
+    "UNVERIFIED": ("Could not be verified", "warning"),
+    "ABSTAINED": ("No answer found", "info"),
+}
+
+
+def _render_grounding_badge(status: str | None) -> None:
+    if not status:
+        return
+    label, kind = _GROUNDING_LABELS.get(status, (status.title(), "info"))
+    getattr(st, kind)(label)
+
+
+def _render_evidence(db, message_id: str) -> None:
+    evidence_rows = conversation_repository.list_evidence_for_message(db, message_id)
+    if not evidence_rows:
+        return
+    chunks_by_id = content_repository.get_chunks_by_ids(db, [e.chunk_id for e in evidence_rows])
+    with st.expander(f"Evidence ({len(evidence_rows)})"):
+        for evidence in evidence_rows:
+            chunk = chunks_by_id.get(evidence.chunk_id)
+            meta_bits = [f"#{evidence.rank}"]
+            start = _format_duration(int(evidence.start_time)) if evidence.start_time else None
+            if start:
+                meta_bits.append(f"at {start}")
+            st.caption(" · ".join(meta_bits))
+            if chunk is not None:
+                st.write(chunk.text)
+
+
 def render_ask(session_id: str) -> None:
-    """Sprint 5 proof-of-work: hybrid retrieval (dense + BM25 -> RRF ->
-    rerank) is real now, but generation (Sprint 6) isn't wired up yet --
-    this shows the actual retrieved evidence chunks directly rather than
-    hiding a working pipeline stage behind a "coming soon" placeholder.
-    Once Sprint 6 lands, this becomes the evidence panel behind a
-    generated answer instead of the whole result."""
+    """The question/answer workspace: retrieval -> generation -> claim-level
+    grounding verification -> a persisted, cited answer (TRD Doc 2 sec
+    21-30). Renders the session's whole conversation (not just the latest
+    turn), since messages/evidence are now actually persisted rather than
+    being a single-shot preview."""
     with SessionLocal() as db:
         has_ready_source = any(
             s.status == "READY" for s in source_repository.list_sources_for_session(db, session_id)
@@ -221,40 +257,43 @@ def render_ask(session_id: str) -> None:
         return
 
     st.divider()
-    st.markdown("### Ask (evidence retrieval only — Sprint 5)")
-    st.caption("Generation and grounding verification land in later sprints; this shows the raw retrieved chunks.")
+    st.markdown("### Ask")
+    st.caption("Answers are generated only from your sources, with every claim checked against the evidence.")
 
-    with st.form("ask_form", clear_on_submit=False):
+    with SessionLocal() as db:
+        conversation = conversation_repository.get_latest_conversation_for_session(db, session_id)
+        history = (
+            conversation_repository.list_messages_for_conversation(db, conversation.id)
+            if conversation is not None
+            else []
+        )
+        for message in history:
+            if message.role == "USER":
+                with st.chat_message("user"):
+                    st.write(message.content)
+            elif message.role == "ASSISTANT":
+                with st.chat_message("assistant"):
+                    _render_grounding_badge(message.grounding_status)
+                    st.write(message.content)
+                    _render_evidence(db, message.id)
+
+    with st.form("ask_form", clear_on_submit=True):
         query = st.text_input("Question", placeholder="e.g. What is a comment in Python?")
-        submitted = st.form_submit_button("Search")
+        submitted = st.form_submit_button("Ask")
 
     if not submitted or not query:
         return
 
-    with st.spinner("Retrieving..."):
+    with st.spinner("Thinking..."):
         with SessionLocal() as db:
             try:
-                results = retrieve(db, session_id, query)
-            except RetrievalError as exc:
+                answering.answer(db, session_id, query)
+                db.commit()
+            except answering.AnsweringError as exc:
+                db.rollback()
                 st.error(str(exc))
                 return
-            chunk_ids = [r.chunk_id for r in results]
-            chunks_by_id = content_repository.get_chunks_by_ids(db, chunk_ids)
-
-    if not results:
-        st.info("No matching evidence found — try a different question, or add more sources.")
-        return
-
-    for rank, candidate in enumerate(results, start=1):
-        chunk = chunks_by_id.get(candidate.chunk_id)
-        with st.container(border=True):
-            meta_bits = [f"#{rank}", f"score {candidate.score:.3f}"]
-            if chunk is not None:
-                start = _format_duration(int(chunk.start_time)) if chunk.start_time else None
-                if start:
-                    meta_bits.append(f"at {start}")
-            st.caption(" · ".join(meta_bits))
-            st.write(candidate.text)
+    st.rerun()
 
 
 def main() -> None:

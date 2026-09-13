@@ -51,6 +51,13 @@ class RerankedCandidate:
     chunk_id: str
     text: str
     score: float
+    # The pre-rerank (RRF-fused) score this candidate carried in, kept
+    # alongside the reranker's own score rather than discarded -- Sprint 6's
+    # Evidence table (Data/Schema spec Doc 4 sec 17) has separate
+    # retrieval_score/reranker_score columns, and losing the first one here
+    # would mean it could never be populated. Optional/defaulted so nothing
+    # that already constructs a RerankedCandidate without it breaks.
+    retrieval_score: float | None = None
 
 
 @dataclass

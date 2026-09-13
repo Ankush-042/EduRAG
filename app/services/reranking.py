@@ -54,7 +54,12 @@ class CrossEncoderReranker(Reranker):
         scored.sort(key=lambda pair: pair[1], reverse=True)
 
         return [
-            RerankedCandidate(chunk_id=candidate.chunk_id, text=candidate.text, score=float(score))
+            RerankedCandidate(
+                chunk_id=candidate.chunk_id,
+                text=candidate.text,
+                score=float(score),
+                retrieval_score=candidate.score,
+            )
             for candidate, score in scored
         ]
 
