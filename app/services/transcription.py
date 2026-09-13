@@ -17,7 +17,9 @@ without touching the pipeline that calls it).
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
 import unicodedata
 from pathlib import Path
 
@@ -37,6 +39,40 @@ settings = get_settings()
 # Value is (model, device_actually_used) — the device matters for the
 # inference-time fallback in WhisperTranscriber.transcribe below.
 _MODEL_CACHE: dict[str, tuple[object, str]] = {}
+
+
+def _register_nvidia_dll_dirs() -> None:
+    """ctranslate2 (faster-whisper's backend) needs the cuBLAS/cuDNN
+    runtime DLLs to actually run on GPU — but NOT the full CUDA Toolkit
+    install. The nvidia-cublas-cu12 / nvidia-cudnn-cu12 PyPI wheels ship
+    just those DLLs, but Windows won't find them automatically since they
+    land under site-packages rather than on PATH: this registers their
+    bin/ folders as DLL search directories, once, before ctranslate2 ever
+    tries to load. A no-op wherever those packages aren't installed (or
+    on non-Windows, where this isn't needed) — CPU fallback still works
+    either way, so this never blocks anything, it only unlocks GPU when
+    the pieces are actually there."""
+    if sys.platform != "win32":
+        return
+    import importlib.util
+
+    for pkg in ("nvidia.cublas", "nvidia.cudnn"):
+        try:
+            spec = importlib.util.find_spec(pkg)
+        except (ImportError, ValueError):
+            continue
+        if not spec or not spec.submodule_search_locations:
+            continue
+        for location in spec.submodule_search_locations:
+            dll_dir = Path(location) / "bin"
+            if dll_dir.is_dir():
+                try:
+                    os.add_dll_directory(str(dll_dir))
+                except OSError:
+                    pass
+
+
+_register_nvidia_dll_dirs()
 
 
 class TranscriptionError(Exception):
