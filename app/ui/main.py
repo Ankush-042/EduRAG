@@ -182,6 +182,9 @@ def render_source_list(session_id: str) -> None:
                     with st.expander("Transcript preview"):
                         try:
                             payload = json.loads(Path(artifact.storage_path).read_text(encoding="utf-8"))
+                            device = payload.get("asr_device")
+                            if device:
+                                st.caption(f"Transcribed on: {device.upper()}")
                             preview_text = " ".join(seg["text"] for seg in payload["segments"])
                             st.write(preview_text[:1500] + ("…" if len(preview_text) > 1500 else ""))
                         except (OSError, json.JSONDecodeError, KeyError) as exc:

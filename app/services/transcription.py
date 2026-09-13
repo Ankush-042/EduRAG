@@ -77,11 +77,21 @@ def _get_model(size: str) -> tuple[object, str]:
 
     try:
         result = (_build_model(size, "cuda", "float16"), "cuda")
-    except Exception:
+        print(f"[EduRAG] ASR model '{size}' loaded on GPU (cuda/float16).")
+    except Exception as exc:
+        print(f"[EduRAG] ASR model '{size}' could not load on GPU ({exc}); using CPU (int8).")
         result = (_build_model(size, "cpu", "int8"), "cpu")
 
     _MODEL_CACHE[size] = result
     return result
+
+
+def get_active_device(size: str) -> str | None:
+    """Which device ended up being used for a given model size, after any
+    GPU -> CPU fallback — exposed so callers can log/display it instead of
+    leaving "did the GPU actually kick in?" as a guessing game."""
+    cached = _MODEL_CACHE.get(size)
+    return cached[1] if cached else None
 
 
 def _normalize_text(text: str) -> str:
@@ -128,6 +138,7 @@ class WhisperTranscriber(Transcriber):
             # than at construction. Fall back to CPU once, permanently for
             # this process (re-tried on every future source too), instead
             # of failing every source that comes after this one.
+            print(f"[EduRAG] GPU inference failed ({exc}); switching to CPU (int8) for '{self._size}'.")
             model = _build_model(self._size, "cpu", "int8")
             _MODEL_CACHE[self._size] = (model, "cpu")
             try:
@@ -185,10 +196,14 @@ def transcribe_source(db: DbSession, source: Source, job: ProcessingJob) -> None
     if not transcript.segments:
         raise TranscriptionError("No speech was detected in the audio.")
 
+    device_used = get_active_device(_model_size(settings.asr_model)) or "unknown"
+    print(f"[EduRAG] Source {source.id} transcribed using device={device_used}")
+
     jobs.update_progress(db, job, progress=0.6, stage="NORMALIZING_TRANSCRIPT")
 
     raw_payload = {
         "language": transcript.language,
+        "asr_device": device_used,
         "segments": [
             {
                 "text": seg.text,
@@ -201,6 +216,7 @@ def transcribe_source(db: DbSession, source: Source, job: ProcessingJob) -> None
     }
     normalized_payload = {
         "language": transcript.language,
+        "asr_device": device_used,
         "segments": [
             {"text": _normalize_text(seg.text), "start": seg.start, "end": seg.end}
             for seg in transcript.segments
