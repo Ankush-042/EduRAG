@@ -41,14 +41,13 @@ def _get_model(model_name: str):
 
     from sentence_transformers import SentenceTransformer
 
-    # No explicit device= here (unlike transcription.py's GPU-first
-    # dance): embedding models at this size (bge-small is 33M params) run
-    # fast enough on CPU that chasing GPU wiring for this step isn't worth
-    # the added failure surface — sentence-transformers already picks CUDA
-    # automatically via torch when it's usable, so GPU is used for free
-    # wherever the transcription GPU setup already made torch/CUDA work,
-    # with no extra code needed here.
-    model = SentenceTransformer(model_name)
+    # device explicitly pinned via settings.torch_model_device (config.py)
+    # — deliberately NOT left to auto-detect. sentence-transformers (via
+    # PyTorch) would otherwise open its own CUDA context in the same
+    # process transcription.py's ctranslate2 already has one open in,
+    # which is a known cause of a silent process crash on Windows. See
+    # config.py's torch_model_device comment for the full reasoning.
+    model = SentenceTransformer(model_name, device=settings.torch_model_device)
     _MODEL_CACHE[model_name] = model
     return model
 

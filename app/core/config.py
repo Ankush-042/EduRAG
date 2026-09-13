@@ -40,6 +40,23 @@ class Settings(BaseSettings):
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     nli_model: str = "cross-encoder/nli-deberta-v3-base"
 
+    # ASR (transcription.py) runs on ctranslate2, not PyTorch, and is the
+    # one model worth GPU-accelerating (whole-video inference). The
+    # embedder/reranker/NLI verifier are all sentence-transformers ->
+    # PyTorch, and PyTorch auto-selects CUDA when available -- which means
+    # by default they'd open a SECOND, independent CUDA context in the
+    # same process ctranslate2 already has one open in. Mixing two
+    # different native CUDA runtimes in one process like that is a known
+    # cause of a silent, unrecoverable process crash (an access violation,
+    # not a catchable Python exception) on Windows -- exactly the
+    # "Streamlit just vanishes right after transcription succeeds" failure
+    # mode this setting exists to rule out. These three models only ever
+    # score a handful to a few dozen short texts per call, so CPU is fast
+    # enough that there's no real reason to risk the GPU contention for
+    # them. Set to "cuda" only once you've confirmed your ctranslate2 +
+    # PyTorch CUDA builds coexist safely in one process on your machine.
+    torch_model_device: str = "cpu"
+
     # --- Generation -----------------------------------------------------
     # Fast external inference is the primary generation path (TRD Doc 2
     # sec 25/48); a local model is the fallback only (sec 49), never the

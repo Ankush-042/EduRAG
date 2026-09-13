@@ -29,7 +29,10 @@ def _get_model(model_name: str):
 
     from sentence_transformers import CrossEncoder
 
-    model = CrossEncoder(model_name)
+    # device explicitly pinned — same reasoning as embedding.py's
+    # _get_model: avoids PyTorch opening a second CUDA context alongside
+    # ctranslate2's in the same process (config.py's torch_model_device).
+    model = CrossEncoder(model_name, device=settings.torch_model_device)
     _MODEL_CACHE[model_name] = model
     return model
 
