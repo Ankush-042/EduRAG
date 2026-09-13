@@ -73,7 +73,13 @@ def _extract_audio_ffmpeg(input_path: Path, output_path: Path) -> None:
             str(output_path),
         ],
         capture_output=True,
-        text=True,
+        # Explicit UTF-8 rather than text=True's default of
+        # locale.getpreferredencoding() — on Windows that's usually cp1252,
+        # which raises UnicodeDecodeError the moment ffmpeg echoes a
+        # non-ASCII video title (Hindi, etc.) to stderr. errors="replace"
+        # so a still-undecodable byte can never crash the error path itself.
+        encoding="utf-8",
+        errors="replace",
     )
     if result.returncode != 0:
         raise IngestionError(f"Audio extraction failed: {result.stderr[-800:]}")
@@ -127,7 +133,7 @@ class SourceIngestionService:
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(source.source_url, download=True)
-                media_path = Path(ydl.prepare_filename(info))
+                media_path = Path(ydl.prepare_filename(info)).resolve()
         except Exception as exc:  # yt-dlp raises its own exception types
             hint = ""
             if "403" in str(exc):
@@ -188,7 +194,7 @@ class SourceIngestionService:
         jobs.start_job(self.db, job, stage="SAVING_UPLOAD")
 
         suffix = Path(upload.name).suffix or ".mp4"
-        media_path = Path(settings.media_dir) / f"{source.id}{suffix}"
+        media_path = (Path(settings.media_dir) / f"{source.id}{suffix}").resolve()
         media_path.write_bytes(upload.read_bytes)
 
         content_hash = _sha256_file(media_path)
@@ -216,7 +222,7 @@ class SourceIngestionService:
         sources.update_source_status(self.db, source, "EXTRACTING")
         jobs.update_progress(self.db, job, progress=0.5, stage="EXTRACTING_AUDIO")
 
-        audio_path = Path(settings.audio_dir) / f"{source.id}.wav"
+        audio_path = (Path(settings.audio_dir) / f"{source.id}.wav").resolve()
         _extract_audio_ffmpeg(self._media_path, audio_path)
 
         sources.add_artifact(

@@ -177,7 +177,12 @@ def transcribe_source(db: DbSession, source: Source, job: ProcessingJob) -> None
         ],
     }
 
-    transcript_dir = Path(settings.transcript_dir)
+    # Resolved to absolute here, at write time — settings.transcript_dir is
+    # relative by default, and a relative path stored in the DB would only
+    # resolve correctly again if a later process happens to share the same
+    # cwd (true today since the app is always launched from the project
+    # root, but not a safe thing to depend on for paths read back later).
+    transcript_dir = Path(settings.transcript_dir).resolve()
     transcript_dir.mkdir(parents=True, exist_ok=True)
 
     raw_path = transcript_dir / f"{source.id}.raw.json"
