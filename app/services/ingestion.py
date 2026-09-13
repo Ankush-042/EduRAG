@@ -1,10 +1,13 @@
 """Sprint 1 — source ingestion: validation, download, audio extraction, and
 the state-machine transitions from TRD Doc 2 sec 40 / Data spec Doc 4 sec 7:
 
-    QUEUED -> DOWNLOADING -> EXTRACTING -> TRANSCRIBING -> ...
+    QUEUED -> DOWNLOADING -> EXTRACTING -> TRANSCRIBING -> PROCESSING -> ...
 
-This module gets sources up to TRANSCRIBING (audio on disk, metadata
-recorded) and stops there — Sprint 2 picks up from TRANSCRIBING onward.
+This module drives sources through download/save + audio extraction, then
+(as of Sprint 2) straight into transcription via app.services.transcription
+— there's no background job queue in this MVP (Doc 6 authority: no Celery/
+Redis), so the full pipeline runs synchronously per add_*_source call and
+lands the source in PROCESSING, ready for Sprint 3 (content structuring).
 Every step is wrapped so a failure lands the source in FAILED with a
 readable error_message rather than leaving it stuck (TRD Doc 2 sec 24).
 """
@@ -23,6 +26,7 @@ from app.core.config import get_settings
 from app.db.models.source import Source
 from app.db.repositories import processing_job_repository as jobs
 from app.db.repositories import source_repository as sources
+from app.services.transcription import transcribe_source
 
 settings = get_settings()
 
@@ -95,6 +99,7 @@ class SourceIngestionService:
         try:
             self._download_youtube(source, job)
             self._extract_audio(source, job)
+            transcribe_source(self.db, source, job)
             jobs.complete_job(self.db, job)
         except Exception as exc:  # noqa: BLE001 — deliberately broad: any
             # failure here must land the source in FAILED, never half-done.
@@ -164,6 +169,7 @@ class SourceIngestionService:
         try:
             self._save_local_upload(source, job, upload)
             self._extract_audio(source, job)
+            transcribe_source(self.db, source, job)
             jobs.complete_job(self.db, job)
         except Exception as exc:  # noqa: BLE001
             sources.update_source_status(self.db, source, "FAILED", error_message=str(exc))
@@ -215,6 +221,7 @@ class SourceIngestionService:
             size_bytes=audio_path.stat().st_size if audio_path.exists() else None,
         )
 
-        # Hand off to Sprint 2 (transcription); this sprint stops here.
+        # transcribe_source() (Sprint 2) picks up from here and carries the
+        # job/status the rest of the way to PROCESSING.
         sources.update_source_status(self.db, source, "TRANSCRIBING")
-        jobs.update_progress(self.db, job, progress=0.9, stage="AWAITING_TRANSCRIPTION")
+        jobs.update_progress(self.db, job, progress=0.4, stage="TRANSCRIBING")

@@ -77,6 +77,17 @@ def set_source_metadata(
     return source
 
 
+def get_latest_artifact(
+    db: DbSession, *, source_id: str, artifact_type: str
+) -> SourceArtifact | None:
+    return (
+        db.query(SourceArtifact)
+        .filter(SourceArtifact.source_id == source_id, SourceArtifact.artifact_type == artifact_type)
+        .order_by(SourceArtifact.id.desc())
+        .first()
+    )
+
+
 def add_artifact(
     db: DbSession,
     *,

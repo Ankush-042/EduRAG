@@ -2,12 +2,15 @@
 
 Sprint 1: sources can actually be added now (YouTube URL or a local video
 upload) and go through real ingestion (download/save -> audio extraction),
-with their state-machine status shown per UI/UX spec Doc 3 sec 9-13. The
-question/answer workspace and evidence rendering still land in later
-sprints — this file keeps growing into `AppShell` incrementally rather
-than being scaffolded as dead UI upfront (Doc 3 sec 40).
+with their state-machine status shown per UI/UX spec Doc 3 sec 9-13.
+Sprint 2 adds real transcription to that same pipeline, plus a transcript
+preview so it's visible that ASR actually ran. The question/answer
+workspace and evidence rendering still land in later sprints — this file
+keeps growing into `AppShell` incrementally rather than being scaffolded
+as dead UI upfront (Doc 3 sec 40).
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -32,13 +35,17 @@ STATUS_LABELS = {
     "QUEUED": "Queued",
     "DOWNLOADING": "Downloading",
     "EXTRACTING": "Extracting audio",
-    "TRANSCRIBING": "Awaiting transcription (Sprint 2)",
-    "PROCESSING": "Processing",
+    "TRANSCRIBING": "Transcribing",
+    "PROCESSING": "Awaiting content structuring (Sprint 3)",
     "INDEXING": "Indexing",
     "READY": "Ready",
     "FAILED": "Couldn't process this source",
     "CANCELLED": "Cancelled",
 }
+
+# Statuses reached only after transcription has actually completed —
+# safe to look for a transcript artifact at these stages.
+_TRANSCRIBED_STATUSES = {"PROCESSING", "INDEXING", "READY"}
 
 
 def _ensure_schema() -> None:
@@ -141,6 +148,8 @@ def render_source_list(session_id: str) -> None:
             duration = _format_duration(source.duration_seconds)
             if duration:
                 meta_bits.append(duration)
+            if source.language:
+                meta_bits.append(f"Language: {source.language.upper()}")
             st.markdown(f"**{title}**")
             st.caption(" · ".join(meta_bits))
 
@@ -157,6 +166,22 @@ def render_source_list(session_id: str) -> None:
                 st.success(status_label)
             else:
                 st.info(status_label)
+
+            # Sprint 2 proof-of-work: once transcription has actually run,
+            # show a snippet so it's visible in the UI, not just in job logs.
+            if source.status in _TRANSCRIBED_STATUSES:
+                with SessionLocal() as db:
+                    artifact = source_repository.get_latest_artifact(
+                        db, source_id=source.id, artifact_type="NORMALIZED_TRANSCRIPT"
+                    )
+                if artifact is not None:
+                    with st.expander("Transcript preview"):
+                        try:
+                            payload = json.loads(Path(artifact.storage_path).read_text(encoding="utf-8"))
+                            preview_text = " ".join(seg["text"] for seg in payload["segments"])
+                            st.write(preview_text[:1500] + ("…" if len(preview_text) > 1500 else ""))
+                        except (OSError, json.JSONDecodeError, KeyError) as exc:
+                            st.caption(f"Couldn't load transcript preview: {exc}")
 
 
 def main() -> None:
