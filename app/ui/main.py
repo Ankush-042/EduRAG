@@ -28,6 +28,7 @@ from app.db.session import SessionLocal, engine
 from app.db import models  # noqa: F401  (registers tables before create_all)
 from app.db.repositories import content_repository, session_repository, source_repository
 from app.services.ingestion import IngestionError, SourceIngestionService, UploadedFile
+from app.services.retrieval import RetrievalError, retrieve
 
 st.set_page_config(page_title="EduRAG", page_icon=None, layout="centered")
 
@@ -205,12 +206,64 @@ def render_source_list(session_id: str) -> None:
                         st.caption(f"{chunk_count} chunk{plural} ready for indexing")
 
 
+def render_ask(session_id: str) -> None:
+    """Sprint 5 proof-of-work: hybrid retrieval (dense + BM25 -> RRF ->
+    rerank) is real now, but generation (Sprint 6) isn't wired up yet --
+    this shows the actual retrieved evidence chunks directly rather than
+    hiding a working pipeline stage behind a "coming soon" placeholder.
+    Once Sprint 6 lands, this becomes the evidence panel behind a
+    generated answer instead of the whole result."""
+    with SessionLocal() as db:
+        has_ready_source = any(
+            s.status == "READY" for s in source_repository.list_sources_for_session(db, session_id)
+        )
+    if not has_ready_source:
+        return
+
+    st.divider()
+    st.markdown("### Ask (evidence retrieval only — Sprint 5)")
+    st.caption("Generation and grounding verification land in later sprints; this shows the raw retrieved chunks.")
+
+    with st.form("ask_form", clear_on_submit=False):
+        query = st.text_input("Question", placeholder="e.g. What is a comment in Python?")
+        submitted = st.form_submit_button("Search")
+
+    if not submitted or not query:
+        return
+
+    with st.spinner("Retrieving..."):
+        with SessionLocal() as db:
+            try:
+                results = retrieve(db, session_id, query)
+            except RetrievalError as exc:
+                st.error(str(exc))
+                return
+            chunk_ids = [r.chunk_id for r in results]
+            chunks_by_id = content_repository.get_chunks_by_ids(db, chunk_ids)
+
+    if not results:
+        st.info("No matching evidence found — try a different question, or add more sources.")
+        return
+
+    for rank, candidate in enumerate(results, start=1):
+        chunk = chunks_by_id.get(candidate.chunk_id)
+        with st.container(border=True):
+            meta_bits = [f"#{rank}", f"score {candidate.score:.3f}"]
+            if chunk is not None:
+                start = _format_duration(int(chunk.start_time)) if chunk.start_time else None
+                if start:
+                    meta_bits.append(f"at {start}")
+            st.caption(" · ".join(meta_bits))
+            st.write(candidate.text)
+
+
 def main() -> None:
     _ensure_schema()
     session_id = _bootstrap_session_id()
     render_header()
     render_add_source(session_id)
     render_source_list(session_id)
+    render_ask(session_id)
 
 
 if __name__ == "__main__":

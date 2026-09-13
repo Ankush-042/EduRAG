@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # --- Retrieval tuning ------------------------------------------------
     max_retrieval_candidates: int = 30
     top_k_evidence: int = 6
+    # Reciprocal Rank Fusion constant -- 60 is the standard default from
+    # the original RRF paper and what most hybrid-retrieval writeups
+    # (including Anthropic's own contextual retrieval work, AI/RAG spec
+    # Doc 5 sec 15-16) use; it dampens how much a #1-vs-#2 rank difference
+    # matters without needing per-corpus tuning. Not something to tune
+    # away from without an eval-set reason (Sprint 11).
+    rrf_k: int = 60
 
     # --- Content structuring (Sprint 3) -----------------------------------
     # Target words per chunk -- sentences (ASR segments) are packed into a

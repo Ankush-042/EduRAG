@@ -115,6 +115,19 @@ def set_chunk_embedding(
     return chunk
 
 
+def get_chunks_by_ids(db: DbSession, chunk_ids: list[str]) -> dict[str, Chunk]:
+    """Bulk fetch for retrieval (Sprint 5): dense search returns chunk ids
+    from Qdrant payloads, sparse search returns them from the BM25 pickle
+    — neither carries a live Chunk row, so this is the one place both
+    paths come back to the DB to get one. Keyed by id (not a list) since
+    callers need to re-associate fetched chunks with fused/ranked scores
+    computed independently of DB order."""
+    if not chunk_ids:
+        return {}
+    rows = db.query(Chunk).filter(Chunk.id.in_(chunk_ids)).all()
+    return {row.id: row for row in rows}
+
+
 def list_chunks_for_session(db: DbSession, session_id: str) -> list[Chunk]:
     """All chunks across every (non-deleted) source in a session — the
     corpus a session's BM25/sparse index is built over. A join rather than

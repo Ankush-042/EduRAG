@@ -45,7 +45,7 @@ settings = get_settings()
 # or reused anywhere is fragile against that assumption ever changing.
 _QDRANT_DIR = Path(settings.qdrant_path).resolve()
 
-# Module-level singleton — see _get_vector_store_client for why this isn't
+# Module-level singleton — see get_vector_store_client for why this isn't
 # opened/closed per call.
 _VECTOR_STORE_CLIENT = None
 
@@ -54,7 +54,7 @@ class IndexingError(Exception):
     """Raised for any indexing failure; the message is what the UI/DB shows."""
 
 
-def _get_vector_store_client():
+def get_vector_store_client():
     """Embedded/local Qdrant — a path on disk, not a server (see
     qdrant_path in config.py: zero external service to run, same call
     already made for SQLite over Postgres). Cached at module level and
@@ -121,7 +121,15 @@ def _contextualize_chunk(chunk, section, source: Source) -> str:
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
 
 
-def _tokenize(text: str) -> list[str]:
+# tokenize() and bm25_index_path() are public (not underscore-prefixed)
+# because Sprint 5's retrieval.py needs the exact same tokenizer and the
+# exact same on-disk index location to read back what this module wrote —
+# they're shared contract between indexing and retrieval, not private
+# internals, so they're named and exposed that way rather than reached
+# into across a module boundary that implies they're private.
+
+
+def tokenize(text: str) -> list[str]:
     """Lowercase, alphanumeric-only tokens — no stemming/lemmatization in
     v1 (documented simplification, same spirit as Sprint 3's ASR-segment-
     as-sentence call); revisit if the eval set shows BM25 recall
@@ -129,7 +137,7 @@ def _tokenize(text: str) -> list[str]:
     return _TOKEN_RE.findall(text.lower())
 
 
-def _bm25_index_path(session_id: str) -> Path:
+def bm25_index_path(session_id: str) -> Path:
     return _QDRANT_DIR.parent / "bm25" / f"{session_id}.pkl"
 
 
@@ -148,10 +156,10 @@ def _rebuild_bm25_index(db: DbSession, session_id: str) -> None:
         return
 
     chunk_ids = [c.id for c in chunks]
-    tokenized_corpus = [_tokenize(c.text) for c in chunks]
+    tokenized_corpus = [tokenize(c.text) for c in chunks]
     bm25 = BM25Okapi(tokenized_corpus)
 
-    path = _bm25_index_path(session_id)
+    path = bm25_index_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "wb") as f:
         pickle.dump({"chunk_ids": chunk_ids, "bm25": bm25}, f)
@@ -194,7 +202,7 @@ def index_source(db: DbSession, source: Source, job: ProcessingJob) -> None:
     try:
         from qdrant_client.models import PointStruct
 
-        client = _get_vector_store_client()
+        client = get_vector_store_client()
         _ensure_collection(client, settings.qdrant_collection, dimension)
 
         points = [
