@@ -1,6 +1,14 @@
 # NOTE: audio extraction also needs `ffmpeg` on PATH (system install, not
 # pip-installable) — e.g. `winget install ffmpeg` / `choco install ffmpeg`.
 #
+# NOTE: YouTube downloads also need a JS runtime on PATH as of yt-dlp's 2026
+# extractor (solving YouTube's JS challenge -- see yt-dlp wiki: "EJS"; the
+# "Requested format is not available" error usually means this is missing).
+# Deno is the default runtime yt-dlp looks for and is a single portable
+# install: `winget install DenoLand.Deno` / `choco install deno`. The
+# `[default]` extra below pulls in the small yt-dlp-ejs helper package that
+# actually drives it -- without both, YouTube downloads can fail entirely.
+#
 # NOTE: for GPU transcription (optional — CPU always works as a fallback),
 # also install the full CUDA-12 runtime set (see app/services/
 # transcription.py::_NVIDIA_PIP_PACKAGES, which is the source of truth —
@@ -25,7 +33,7 @@ qdrant-client>=1.10
 rank-bm25>=0.2.2
 sentence-transformers>=3.0
 faster-whisper>=1.0
-yt-dlp>=2024.8.6
+yt-dlp[default]>=2026.8.19
 ffmpeg-python>=0.2.0
 groq>=0.9
 python-dotenv>=1.0

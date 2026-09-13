@@ -134,6 +134,17 @@ class SourceIngestionService:
             "quiet": True,
             "no_warnings": True,
             "noplaylist": True,
+            # As of yt-dlp's 2026 YouTube extractor, solving YouTube's JS
+            # challenge (needed to get real, downloadable format URLs at
+            # all) requires an external JS runtime + the small "EJS" script
+            # that drives it (see yt-dlp wiki: "EJS"). `yt-dlp[default]`
+            # (requirements.txt) already bundles the yt-dlp-ejs package, so
+            # this normally needs nothing further -- but if that package is
+            # ever missing/stale, letting yt-dlp fetch the script itself
+            # from GitHub is the documented, supported fallback rather than
+            # a hard failure. It only downloads a small script, on demand,
+            # and does nothing when the bundled package already works.
+            "remote_components": ["ejs:github"],
         }
         # NOTE: deliberately NOT forcing a specific player_client (e.g.
         # "tv") here. That was tried and reverted -- YouTube's tv client
@@ -177,6 +188,21 @@ class SourceIngestionService:
                     " (YouTube is bot-checking this request even via the TV client — "
                     "set YOUTUBE_COOKIES_FROM_BROWSER or YOUTUBE_COOKIES_FILE in .env, "
                     "restart the app, and retry — see .env.example)"
+                )
+            elif "Requested format is not available" in exc_str:
+                # As of yt-dlp's 2026 YouTube extractor, this almost always
+                # means no JS runtime could be found to solve YouTube's JS
+                # challenge (see yt-dlp wiki: "EJS") -- extraction silently
+                # comes back with no real, downloadable formats at all, not
+                # just a missing audio-only one. Confirmed against yt-dlp's
+                # own EJS documentation and multiple 2026 upstream issues
+                # (e.g. yt-dlp/yt-dlp#16350) rather than assumed.
+                hint = (
+                    " (this almost always means yt-dlp has no JavaScript runtime "
+                    "to solve YouTube's challenge with -- install Deno "
+                    "[winget install DenoLand.Deno], make sure `pip install -U "
+                    "\"yt-dlp[default]\"` has been run so the yt-dlp-ejs helper "
+                    "package is present, then restart the app and retry)"
                 )
             raise IngestionError(f"Could not download the video: {exc}{hint}") from exc
 
