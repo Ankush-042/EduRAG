@@ -129,7 +129,14 @@ class SourceIngestionService:
                 info = ydl.extract_info(source.source_url, download=True)
                 media_path = Path(ydl.prepare_filename(info))
         except Exception as exc:  # yt-dlp raises its own exception types
-            raise IngestionError(f"Could not download the video: {exc}") from exc
+            hint = ""
+            if "403" in str(exc):
+                # YouTube regularly changes its throttling/cipher scheme;
+                # this is near-always an out-of-date yt-dlp, not a real
+                # permissions issue, and updating almost always fixes it
+                # without changing anything else about the request.
+                hint = " (this is usually an outdated yt-dlp — try: python -m pip install -U yt-dlp, then retry)"
+            raise IngestionError(f"Could not download the video: {exc}{hint}") from exc
 
         if not media_path.exists():
             raise IngestionError("Download reported success but the media file is missing.")
