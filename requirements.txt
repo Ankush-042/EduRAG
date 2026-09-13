@@ -2,15 +2,20 @@
 # pip-installable) — e.g. `winget install ffmpeg` / `choco install ffmpeg`.
 #
 # NOTE: for GPU transcription (optional — CPU always works as a fallback),
-# also install: nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-nvjitlink-cu12
-# These ship just the cuBLAS/cuDNN runtime DLLs ctranslate2 needs, without
-# requiring the full CUDA Toolkit. nvidia-nvjitlink-cu12 is required too on
-# Windows: cublas64_12.dll (CUDA 12.x) itself depends on nvJitLink64_*.dll,
-# and without it Windows fails to resolve that dependency — which shows up
-# as ctranslate2 reporting "cublas64_12.dll is not found or cannot be
-# loaded" even though the file is present. Not listed below as hard
-# requirements since they're large (100s of MB) and pointless on a
-# CPU-only/non-NVIDIA machine.
+# also install the full CUDA-12 runtime set (see app/services/
+# transcription.py::_NVIDIA_PIP_PACKAGES, which is the source of truth —
+# keep this comment in sync with it):
+#   nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-nvjitlink-cu12
+#   nvidia-cusparse-cu12 nvidia-curand-cu12 nvidia-cuda-runtime-cu12
+#   nvidia-cuda-nvrtc-cu12
+# cuBLAS/cuDNN are what ctranslate2 calls directly; the rest are THEIR
+# transitive dependencies on CUDA 12 (nvJitLink in particular — without
+# it, cublas64_12.dll fails to resolve its own dependency, which
+# ctranslate2 reports as "cublas64_12.dll is not found or cannot be
+# loaded" even though the file itself is present). This is the full pip
+# runtime set, not the 3GB+ CUDA Toolkit — it's still ~1GB total but
+# far smaller and inference-only. Not listed below as hard requirements
+# since it's pointless on a CPU-only/non-NVIDIA machine.
 streamlit>=1.38
 pydantic>=2.7
 pydantic-settings>=2.4

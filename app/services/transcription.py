@@ -41,52 +41,89 @@ settings = get_settings()
 _MODEL_CACHE: dict[str, tuple[object, str]] = {}
 
 
+# The full set of pip-installable NVIDIA CUDA-12 runtime packages
+# ctranslate2's GPU backend can end up needing, directly or transitively,
+# at model-load or first-inference time. cublas/cudnn are the two this
+# pipeline touches directly; the rest are THEIR dependencies:
+#   - nvJitLink (own package since CUDA 12.x): cublas64_12.dll itself
+#     won't resolve without it.
+#   - cuSPARSE / cuRAND: pulled in by some cuDNN convolution/RNN kernels.
+#   - cudart (cuda_runtime) / nvrtc: base CUDA runtime + the JIT compiler
+#     cuDNN uses for some kernels.
+# Installing all of them, even ones a given run never calls, is cheap
+# (~1GB total, one-time) and turns "which exact sub-dependency is
+# missing this time" from a guessing game into a single install.
+_NVIDIA_DLL_PACKAGES = (
+    "nvidia.cublas",
+    "nvidia.cudnn",
+    "nvidia.nvjitlink",
+    "nvidia.cusparse",
+    "nvidia.curand",
+    "nvidia.cuda_runtime",
+    "nvidia.cuda_nvrtc",
+)
+
+_NVIDIA_PIP_PACKAGES = (
+    "nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-nvjitlink-cu12 "
+    "nvidia-cusparse-cu12 nvidia-curand-cu12 nvidia-cuda-runtime-cu12 "
+    "nvidia-cuda-nvrtc-cu12"
+)
+
+
 def _register_nvidia_dll_dirs() -> None:
     """ctranslate2 (faster-whisper's backend) needs the cuBLAS/cuDNN
-    runtime DLLs to actually run on GPU — but NOT the full CUDA Toolkit
-    install. The nvidia-cublas-cu12 / nvidia-cudnn-cu12 PyPI wheels ship
-    just those DLLs, but Windows won't find them automatically since they
-    land under site-packages rather than on PATH: this registers their
-    bin/ folders as DLL search directories, once, before ctranslate2 ever
-    tries to load. A no-op wherever those packages aren't installed (or
-    on non-Windows, where this isn't needed) — CPU fallback still works
-    either way, so this never blocks anything, it only unlocks GPU when
-    the pieces are actually there.
+    runtime DLLs (and their own sub-dependencies — see
+    _NVIDIA_DLL_PACKAGES above) to run on GPU — but NOT the full CUDA
+    Toolkit install. The matching PyPI wheels ship just those DLLs, but
+    Windows won't find them automatically since they land under
+    site-packages rather than on PATH. This is a no-op wherever a given
+    package isn't installed, or on non-Windows where it isn't needed —
+    CPU fallback still works either way, so this never blocks anything,
+    it only unlocks GPU when the pieces are actually there.
 
-    nvidia.nvjitlink is included too: since CUDA 12.x, cublas64_12.dll
-    itself depends on nvJitLink64_*.dll (a JIT-linking library that got
-    split out into its own package, nvidia-nvjitlink-cu12) — without it,
-    Windows fails to resolve cublas64_12.dll's own dependency and
-    ctranslate2 reports this as "cublas64_12.dll is not found or cannot
-    be loaded", even though the file is sitting right there and its own
-    directory is correctly registered. This is a well-known gotcha for
-    every pip-installed CUDA 12 GPU project on Windows, not specific to
-    this codebase."""
+    Two independent registration mechanisms are used, deliberately, not
+    one: os.add_dll_directory() is the modern, Python-recommended way,
+    but ctranslate2's compiled extension has been reported (across
+    several Whisper-adjacent projects, on Windows specifically) to still
+    fail to resolve a DLL's own sub-dependencies through it alone on
+    some driver/DLL combinations. Prepending the same directories to
+    PATH is the older, more universally-respected DLL search mechanism.
+    Doing both means this doesn't depend on guessing which loading path
+    ctranslate2's binary actually uses."""
     if sys.platform != "win32":
         return
     import importlib.util
 
-    for pkg in ("nvidia.cublas", "nvidia.cudnn", "nvidia.nvjitlink"):
+    registered_dirs: list[Path] = []
+    for pkg in _NVIDIA_DLL_PACKAGES:
         try:
             spec = importlib.util.find_spec(pkg)
         except (ImportError, ValueError) as exc:
-            print(f"[EduRAG] {pkg}: not found ({exc}) — GPU inference needs "
-                  f"'python -m pip install --user nvidia-cublas-cu12 nvidia-cudnn-cu12 nvidia-nvjitlink-cu12'")
+            print(f"[EduRAG] {pkg}: not found ({exc})")
             continue
         if not spec or not spec.submodule_search_locations:
             print(f"[EduRAG] {pkg}: import machinery has no spec/location for it — "
-                  f"is it actually installed for this same 'python'?")
+                  f"not installed for this same 'python'")
             continue
         for location in spec.submodule_search_locations:
             dll_dir = Path(location) / "bin"
             if not dll_dir.is_dir():
                 print(f"[EduRAG] {pkg}: found package at {location} but no bin/ subfolder there")
                 continue
+            registered_dirs.append(dll_dir)
             try:
                 os.add_dll_directory(str(dll_dir))
                 print(f"[EduRAG] {pkg}: registered DLL directory {dll_dir}")
             except OSError as exc:
-                print(f"[EduRAG] {pkg}: found {dll_dir} but could not register it ({exc})")
+                print(f"[EduRAG] {pkg}: found {dll_dir} but add_dll_directory failed ({exc})")
+
+    if registered_dirs:
+        path_prefix = os.pathsep.join(str(d) for d in registered_dirs)
+        os.environ["PATH"] = path_prefix + os.pathsep + os.environ.get("PATH", "")
+        print(f"[EduRAG] Also prepended {len(registered_dirs)} NVIDIA bin dir(s) to PATH for this process.")
+    else:
+        print(f"[EduRAG] No NVIDIA CUDA-12 runtime packages found at all — GPU inference needs "
+              f"'python -m pip install --user {_NVIDIA_PIP_PACKAGES}'")
 
 
 _register_nvidia_dll_dirs()
