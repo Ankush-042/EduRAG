@@ -48,6 +48,14 @@ class Settings(BaseSettings):
     # --- Session ----------------------------------------------------------
     session_ttl_hours: int = 6
 
+    # --- Local storage (ingestion artifacts) ------------------------------
+    # Never committed (see .gitignore) — original media/audio stay on disk
+    # only, per the local-first / no-large-blobs-in-the-DB rule (Data spec
+    # Doc 4 sec 3, 9).
+    media_dir: str = "./data/media"
+    audio_dir: str = "./data/audio"
+    transcript_dir: str = "./data/transcripts"
+
 
 @lru_cache
 def get_settings() -> Settings:

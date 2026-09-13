@@ -2,8 +2,10 @@
 Streamlit's threaded execution model; everything else is standard."""
 
 from contextlib import contextmanager
+from pathlib import Path
 
 from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
@@ -11,6 +13,19 @@ from app.core.config import get_settings
 settings = get_settings()
 
 _connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+
+
+def _ensure_sqlite_dir(database_url: str) -> None:
+    """SQLite (unlike a real DB server) never creates its own parent
+    directory — it just fails with 'unable to open database file' if the
+    folder isn't there yet. Nothing else in this app is guaranteed to run
+    before the engine connects, so this has to happen right here."""
+    url = make_url(database_url)
+    if url.get_backend_name() == "sqlite" and url.database and url.database != ":memory:":
+        Path(url.database).resolve().parent.mkdir(parents=True, exist_ok=True)
+
+
+_ensure_sqlite_dir(settings.database_url)
 
 engine = create_engine(settings.database_url, connect_args=_connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)

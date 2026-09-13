@@ -1,3 +1,5 @@
+# NOTE: audio extraction also needs `ffmpeg` on PATH (system install, not
+# pip-installable) — e.g. `winget install ffmpeg` / `choco install ffmpeg`.
 streamlit>=1.38
 pydantic>=2.7
 pydantic-settings>=2.4
