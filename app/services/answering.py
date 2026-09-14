@@ -111,6 +111,20 @@ def _build_context(evidence_rows: list[tuple]) -> str:
     return "\n\n".join(f"[{i}] {chunk.text}" for i, (chunk, _candidate) in enumerate(evidence_rows, start=1))
 
 
+def _build_verification_context(evidence_rows: list[tuple]) -> str:
+    """Same passages as _build_context, but WITHOUT the "[n] " numbering --
+    a self-review catch on the Sprint 9 combined-context check below: that
+    check reused _build_context's numbered string as the NLI premise, but
+    claims.py's own docstring already established the reason evidence
+    text is never fed to the verifier with citation syntax attached (the
+    NLI model was never trained on it and it's noise, not signal, to it).
+    The per-passage loop above was never affected -- it verifies against
+    chunk.text directly -- only the combined-context fallback had this
+    inconsistency, since it's the one place a freshly-built multi-passage
+    string gets passed to verifier.verify() instead of raw chunk text."""
+    return "\n\n".join(chunk.text for chunk, _candidate in evidence_rows)
+
+
 def _make_abstained(db: DbSession, conversation_id: str, order: int, t_start: float) -> AnsweredMessage:
     latency_ms = int((time.monotonic() - t_start) * 1000)
     message = conversations.create_message(
@@ -164,6 +178,11 @@ def answer(db: DbSession, session_id: str, question: str) -> AnsweredMessage:
         return _make_abstained(db, conversation.id, assistant_order, t_start)
 
     context = _build_context(evidence_rows)
+    # Separate, citation-marker-free copy for the combined-context NLI
+    # check further down -- see _build_verification_context's docstring.
+    # The generator still gets the numbered `context` above; only the
+    # verifier gets this one.
+    verification_context = _build_verification_context(evidence_rows)
 
     try:
         generator = get_generator()
@@ -240,7 +259,7 @@ def answer(db: DbSession, session_id: str, question: str) -> AnsweredMessage:
         # this is strictly a second chance, never a way to downgrade a
         # verdict the per-passage loop already got right.
         if best_result.verdict != "ENTAILMENT":
-            combined_result = verifier.verify(claim_for_nli, context)
+            combined_result = verifier.verify(claim_for_nli, verification_context)
             if combined_result.verdict == "ENTAILMENT":
                 # Still cite the single passage the claim scored highest
                 # against (best_evidence) -- that's the most useful pointer
