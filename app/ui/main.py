@@ -12,6 +12,7 @@ as dead UI upfront (Doc 3 sec 40).
 
 import json
 import sys
+import time
 from pathlib import Path
 
 # Streamlit executes this file directly, so sys.path[0] is this file's own
@@ -29,6 +30,7 @@ from app.db import models  # noqa: F401  (registers tables before create_all)
 from app.db.repositories import (
     content_repository,
     conversation_repository,
+    processing_job_repository,
     session_repository,
     source_repository,
 )
@@ -56,6 +58,11 @@ _TRANSCRIBED_STATUSES = {"PROCESSING", "INDEXING", "READY"}
 # Statuses reached only after content structuring has actually completed —
 # safe to look for chunks at these stages.
 _STRUCTURED_STATUSES = {"INDEXING", "READY"}
+
+# Sprint 7: a source sitting in any of these is still being worked on by a
+# background pipeline thread (app/services/ingestion.py) — used to decide
+# whether to keep auto-refreshing the page.
+_ACTIVE_STATUSES = {"QUEUED", "DOWNLOADING", "EXTRACTING", "TRANSCRIBING", "PROCESSING", "INDEXING"}
 
 
 def _ensure_schema() -> None:
@@ -107,23 +114,23 @@ def render_add_source(session_id: str) -> None:
             url = st.text_input("YouTube URL", placeholder="https://www.youtube.com/watch?v=...")
             submitted = st.form_submit_button("Add source")
         if submitted and url:
-            with st.spinner("Downloading and extracting audio — this can take a while for long videos..."):
-                with SessionLocal() as db:
-                    service = SourceIngestionService(db)
-                    try:
-                        source = service.add_youtube_source(session_id, url)
-                        db.commit()
-                        if source.status == "FAILED":
-                            st.error(f"Couldn't process this source: {source.error_message}")
-                    except IngestionError as exc:
-                        db.rollback()
-                        st.error(str(exc))
+            # Sprint 7: add_youtube_source now only validates + creates the
+            # row and hands the real work to a background thread, so this
+            # returns almost immediately — no more blocking the whole UI
+            # for the length of the video.
+            with SessionLocal() as db:
+                service = SourceIngestionService(db)
+                try:
+                    service.add_youtube_source(session_id, url)
+                except IngestionError as exc:
+                    db.rollback()
+                    st.error(str(exc))
             st.rerun()
 
     with tab_local:
         uploaded = st.file_uploader("Upload a video", type=["mp4", "mkv", "mov", "webm", "avi"])
         if uploaded is not None and st.button("Add this video"):
-            with st.spinner("Saving and extracting audio..."):
+            with st.spinner("Saving upload..."):
                 with SessionLocal() as db:
                     service = SourceIngestionService(db)
                     try:
@@ -132,10 +139,7 @@ def render_add_source(session_id: str) -> None:
                             read_bytes=uploaded.getvalue(),
                             mime_type=uploaded.type,
                         )
-                        source = service.add_local_video_source(session_id, upload)
-                        db.commit()
-                        if source.status == "FAILED":
-                            st.error(f"Couldn't process this source: {source.error_message}")
+                        service.add_local_video_source(session_id, upload)
                     except IngestionError as exc:
                         db.rollback()
                         st.error(str(exc))
@@ -174,6 +178,16 @@ def render_source_list(session_id: str) -> None:
                     st.rerun()
             elif source.status == "READY":
                 st.success(status_label)
+            elif source.status in _ACTIVE_STATUSES:
+                # Sprint 7: this source is being worked on right now by a
+                # background pipeline thread — show real per-stage
+                # progress (already tracked in ProcessingJob) instead of
+                # a static "processing" label with no sense of movement.
+                with SessionLocal() as db:
+                    job = processing_job_repository.latest_job_for_source(db, source.id)
+                stage_label = STATUS_LABELS.get(source.status, source.status)
+                progress = job.progress if job else 0.0
+                st.progress(min(max(progress, 0.0), 1.0), text=stage_label)
             else:
                 st.info(status_label)
 
@@ -296,6 +310,14 @@ def render_ask(session_id: str) -> None:
     st.rerun()
 
 
+def _has_active_source(session_id: str) -> bool:
+    with SessionLocal() as db:
+        return any(
+            s.status in _ACTIVE_STATUSES
+            for s in source_repository.list_sources_for_session(db, session_id)
+        )
+
+
 def main() -> None:
     _ensure_schema()
     session_id = _bootstrap_session_id()
@@ -303,6 +325,16 @@ def main() -> None:
     render_add_source(session_id)
     render_source_list(session_id)
     render_ask(session_id)
+
+    # Sprint 7: while a background pipeline thread is still working on a
+    # source, keep re-running this script every couple seconds so its
+    # progress (read fresh from the DB each render_source_list call above)
+    # actually moves on screen -- without this the page would sit frozen
+    # on whatever stage it was in at page load, even though the thread
+    # itself is making real progress underneath it.
+    if _has_active_source(session_id):
+        time.sleep(2)
+        st.rerun()
 
 
 if __name__ == "__main__":

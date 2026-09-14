@@ -14,6 +14,13 @@ def create_job(db: DbSession, *, source_id: str, job_type: str) -> ProcessingJob
     return job
 
 
+def get_job(db: DbSession, job_id: str) -> ProcessingJob | None:
+    """Sprint 7: looked up by id from the background pipeline thread, which
+    has its own DB session and so can't hold onto the ProcessingJob object
+    the request thread created."""
+    return db.get(ProcessingJob, job_id)
+
+
 def start_job(db: DbSession, job: ProcessingJob, *, stage: str) -> ProcessingJob:
     job.status = "RUNNING"
     job.current_stage = stage

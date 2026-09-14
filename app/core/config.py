@@ -35,7 +35,16 @@ class Settings(BaseSettings):
     qdrant_collection: str = "edurag_chunks"
 
     # --- Models (interchangeable, see app/core/interfaces.py) ---------
-    asr_model: str = "faster-whisper:base"
+    # Sprint 7: bumped base -> small. Model size is the single biggest
+    # lever on transcript accuracy (every downstream stage inherits ASR
+    # errors), and the batched GPU pipeline (transcription.py) now largely
+    # pays for the extra size with a 2-4x throughput win on long audio.
+    asr_model: str = "faster-whisper:small"
+    # GPU-only batch size for faster-whisper's BatchedInferencePipeline
+    # (transcription.py) — unused on CPU. 16 is faster-whisper's own
+    # documented default; raise it if VRAM allows for more throughput on
+    # very long lectures, lower it if a source fails with a CUDA OOM.
+    asr_batch_size: int = 16
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     # Was cross-encoder/nli-deberta-v3-base -- swapped after real grounding

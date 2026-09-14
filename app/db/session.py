@@ -1,5 +1,13 @@
 """Engine + session factory. SQLite needs check_same_thread=False for
-Streamlit's threaded execution model; everything else is standard."""
+Streamlit's threaded execution model; everything else is standard.
+
+Sprint 7: ingestion now runs on a background thread with its own session
+(app/services/ingestion.py) while the Streamlit request thread keeps
+polling with its own reads — two threads touching the same SQLite file
+concurrently. SQLite serializes writes at the file level and raises
+"database is locked" if a writer can't get the lock within its busy
+timeout; the default timeout (5s) is tight for that pattern, so it's
+raised here rather than waiting to see the error on real hardware."""
 
 from contextlib import contextmanager
 from pathlib import Path
@@ -12,7 +20,9 @@ from app.core.config import get_settings
 
 settings = get_settings()
 
-_connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
+_connect_args = (
+    {"check_same_thread": False, "timeout": 30} if settings.database_url.startswith("sqlite") else {}
+)
 
 
 def _ensure_sqlite_dir(database_url: str) -> None:

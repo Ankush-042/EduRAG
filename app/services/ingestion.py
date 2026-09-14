@@ -5,12 +5,28 @@ the state-machine transitions from TRD Doc 2 sec 40 / Data spec Doc 4 sec 7:
 
 This module drives sources through download/save + audio extraction, then
 straight into transcription (Sprint 2), content structuring (Sprint 3),
-and indexing (Sprint 4) — there's no background job queue in this MVP
-(Doc 6 authority: no Celery/Redis), so the full pipeline runs
-synchronously per add_*_source call and lands the source in READY,
-searchable by the retrieval pipeline Sprint 5 builds. Every step is
-wrapped so a failure lands the source in FAILED with a readable
-error_message rather than leaving it stuck (TRD Doc 2 sec 24).
+and indexing (Sprint 4). Every step is wrapped so a failure lands the
+source in FAILED with a readable error_message rather than leaving it
+stuck (TRD Doc 2 sec 24).
+
+Sprint 7 (background execution): there's still no real job queue (no
+Celery/Redis, per Doc 6 authority) — but the whole point of a 1-hour
+lecture needing to "process real quick" is that the UI can't sit blocked
+for the full pipeline duration either. add_youtube_source /
+add_local_video_source now only do the fast, synchronous part (validate,
+create the Source + ProcessingJob rows) and hand the actual download ->
+extract -> transcribe -> structure -> index pipeline off to a daemon
+thread (_run_*_pipeline below), returning immediately with the source in
+QUEUED. The UI polls source/job status on its own rerun cycle (already
+DB-backed, so this needed no new plumbing) instead of blocking on a
+st.spinner for the real duration of ingestion.
+
+The one thing that changes because of this: a SQLAlchemy Session is not
+thread-safe, so the background thread can't reuse the caller's `self.db`
+— it opens its own SessionLocal() (app/db/session.py already sets
+check_same_thread=False for exactly this) and looks the Source/
+ProcessingJob back up by id rather than being handed the ORM objects
+across the thread boundary.
 """
 
 from __future__ import annotations
@@ -18,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,6 +49,87 @@ from app.services.structuring import structure_source
 from app.services.transcription import normalize_language_hint, transcribe_source
 
 settings = get_settings()
+
+
+def _spawn_pipeline_thread(target, *args) -> None:
+    """daemon=True so a still-running ingestion never blocks process
+    exit -- it's re-run from scratch on next launch, same as any other
+    interrupted-and-restarted job in this MVP (no resume-from-partial
+    logic exists at any stage, so there's nothing extra to clean up)."""
+    threading.Thread(target=target, args=args, daemon=True).start()
+
+
+def _run_youtube_pipeline(source_id: str, job_id: str) -> None:
+    """Entry point for the background thread (Sprint 7) — opens its own
+    DB session/service instance and runs the same steps
+    add_youtube_source used to run inline. source.source_url is already
+    persisted by the time this runs, so it doesn't need to be passed in."""
+    from app.db.session import SessionLocal
+
+    with SessionLocal() as db:
+        source = sources.get_source(db, source_id)
+        job = jobs.get_job(db, job_id)
+        service = SourceIngestionService(db)
+        try:
+            # Committing after every stage (rather than once at the end) is
+            # what makes the progress bar in the UI actually move -- the UI
+            # reads through a completely separate SessionLocal()/connection
+            # (main thread), so it only ever sees whatever this thread has
+            # committed, never what's merely flushed within an open
+            # transaction here.
+            service._download_youtube(source, job)
+            db.commit()
+            service._extract_audio(source, job)
+            db.commit()
+            transcribe_source(db, source, job)
+            db.commit()
+            structure_source(db, source, job)
+            db.commit()
+            index_source(db, source, job)  # index_source itself moves the source to READY
+            db.commit()
+            jobs.complete_job(db, job)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001 — must land in FAILED, never half-done.
+            db.rollback()
+            source = sources.get_source(db, source_id)
+            job = jobs.get_job(db, job_id)
+            sources.update_source_status(db, source, "FAILED", error_message=str(exc))
+            jobs.fail_job(db, job, error_message=str(exc))
+            db.commit()
+
+
+def _run_local_video_pipeline(source_id: str, job_id: str, upload: "UploadedFile") -> None:
+    """Same as _run_youtube_pipeline but for a local upload — the raw
+    bytes (`upload`) have to be passed through directly since, unlike a
+    YouTube URL, they were never persisted to the DB."""
+    from app.db.session import SessionLocal
+
+    with SessionLocal() as db:
+        source = sources.get_source(db, source_id)
+        job = jobs.get_job(db, job_id)
+        service = SourceIngestionService(db)
+        try:
+            # See _run_youtube_pipeline above for why this commits after
+            # every stage instead of once at the end.
+            service._save_local_upload(source, job, upload)
+            db.commit()
+            service._extract_audio(source, job)
+            db.commit()
+            transcribe_source(db, source, job)
+            db.commit()
+            structure_source(db, source, job)
+            db.commit()
+            index_source(db, source, job)  # index_source itself moves the source to READY
+            db.commit()
+            jobs.complete_job(db, job)
+            db.commit()
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            source = sources.get_source(db, source_id)
+            job = jobs.get_job(db, job_id)
+            sources.update_source_status(db, source, "FAILED", error_message=str(exc))
+            jobs.fail_job(db, job, error_message=str(exc))
+            db.commit()
 
 
 class IngestionError(Exception):
@@ -96,6 +194,14 @@ class SourceIngestionService:
     # -- YouTube ---------------------------------------------------------
 
     def add_youtube_source(self, session_id: str, url: str) -> Source:
+        """Sprint 7: only the fast, synchronous part happens here now
+        (validate + create the Source/ProcessingJob rows) — the actual
+        download/transcribe/index pipeline runs on a background thread
+        (_run_youtube_pipeline) so this returns in milliseconds instead of
+        blocking on however long the real video takes. The caller is
+        responsible for committing self.db right after this returns,
+        same as before (the background thread needs the row committed
+        before it can see it from its own session)."""
         url = url.strip()
         if not url or ("youtube.com" not in url and "youtu.be" not in url):
             raise IngestionError("That doesn't look like a YouTube URL.")
@@ -104,18 +210,9 @@ class SourceIngestionService:
             self.db, session_id=session_id, source_type="YOUTUBE", source_url=url
         )
         job = jobs.create_job(self.db, source_id=source.id, job_type="FULL_PIPELINE")
+        self.db.commit()
 
-        try:
-            self._download_youtube(source, job)
-            self._extract_audio(source, job)
-            transcribe_source(self.db, source, job)
-            structure_source(self.db, source, job)
-            index_source(self.db, source, job)
-            jobs.complete_job(self.db, job)
-        except Exception as exc:  # noqa: BLE001 — deliberately broad: any
-            # failure here must land the source in FAILED, never half-done.
-            sources.update_source_status(self.db, source, "FAILED", error_message=str(exc))
-            jobs.fail_job(self.db, job, error_message=str(exc))
+        _spawn_pipeline_thread(_run_youtube_pipeline, source.id, job.id)
         return source
 
     def _download_youtube(self, source: Source, job) -> None:
@@ -232,6 +329,11 @@ class SourceIngestionService:
     # -- Local video -------------------------------------------------------
 
     def add_local_video_source(self, session_id: str, upload: UploadedFile) -> Source:
+        """Sprint 7: same split as add_youtube_source — create the rows
+        synchronously, hand the pipeline to a background thread. The raw
+        upload bytes (`upload`) are passed directly into the thread since
+        they aren't persisted anywhere the thread's own session could
+        look them back up from."""
         source = sources.create_source(
             self.db,
             session_id=session_id,
@@ -240,17 +342,9 @@ class SourceIngestionService:
             mime_type=upload.mime_type,
         )
         job = jobs.create_job(self.db, source_id=source.id, job_type="FULL_PIPELINE")
+        self.db.commit()
 
-        try:
-            self._save_local_upload(source, job, upload)
-            self._extract_audio(source, job)
-            transcribe_source(self.db, source, job)
-            structure_source(self.db, source, job)
-            index_source(self.db, source, job)
-            jobs.complete_job(self.db, job)
-        except Exception as exc:  # noqa: BLE001
-            sources.update_source_status(self.db, source, "FAILED", error_message=str(exc))
-            jobs.fail_job(self.db, job, error_message=str(exc))
+        _spawn_pipeline_thread(_run_local_video_pipeline, source.id, job.id, upload)
         return source
 
     def _save_local_upload(self, source: Source, job, upload: UploadedFile) -> None:

@@ -12,6 +12,24 @@ Kept independent of app/services/ingestion.py: ingestion owns download/
 save/extract, this owns ASR — the model-abstraction split from
 app/core/interfaces.py applies here too (concrete engine is swappable
 without touching the pipeline that calls it).
+
+Sprint 7 (speed + accuracy refinement): two changes on top of Sprint 2,
+both aimed directly at "a 1-hour lecture must process real quick AND the
+answer must be far more accurate":
+  1. GPU runs now go through faster-whisper's BatchedInferencePipeline
+     instead of a plain model.transcribe() call. Batching parallelizes
+     VAD-detected speech chunks across the GPU instead of decoding them
+     one at a time -- faster-whisper's own benchmarks show ~2-4x
+     throughput on long audio with no accuracy change (it's the same
+     model weights, same decode, just batched). CPU keeps the old
+     unbatched path: batching's win is GPU parallelism, and this is
+     already the CPU *fallback*, not the common case.
+  2. Default asr_model moved from "base" to "small". Model size is the
+     single biggest lever on transcript accuracy (which every downstream
+     stage -- chunking, retrieval, generation, grounding -- inherits
+     errors from), and GPU is already confirmed working on real hardware
+     here, so "base" was leaving accuracy on the table for a speed
+     concern that (1) above now largely pays for.
 """
 
 from __future__ import annotations
@@ -36,9 +54,11 @@ settings = get_settings()
 
 # Loaded models are expensive (seconds to load, hundreds of MB) — cache by
 # size so re-transcribing within the same process reuses the same model.
-# Value is (model, device_actually_used) — the device matters for the
-# inference-time fallback in WhisperTranscriber.transcribe below.
-_MODEL_CACHE: dict[str, tuple[object, str]] = {}
+# Value is (model, device_actually_used, batched_pipeline_or_None) — the
+# device matters for the inference-time fallback in
+# WhisperTranscriber.transcribe below; the batched pipeline (Sprint 7) is
+# only ever non-None on a successful GPU load.
+_MODEL_CACHE: dict[str, tuple[object, str, object | None]] = {}
 
 
 # The full set of pip-installable NVIDIA CUDA-12 runtime packages
@@ -145,7 +165,22 @@ def _build_model(size: str, device: str, compute_type: str):
     return WhisperModel(size, device=device, compute_type=compute_type)
 
 
-def _get_model(size: str) -> tuple[object, str]:
+def _build_batched_pipeline(model) -> object | None:
+    """Sprint 7: wrap a loaded GPU model in faster-whisper's
+    BatchedInferencePipeline for the 2-4x long-audio throughput win.
+    Never allowed to block a source: any failure here (e.g. an older
+    faster-whisper without this class) just means we fall back to the
+    plain unbatched model, exactly as if this were CPU."""
+    try:
+        from faster_whisper import BatchedInferencePipeline
+
+        return BatchedInferencePipeline(model=model)
+    except Exception as exc:
+        print(f"[EduRAG] BatchedInferencePipeline unavailable ({exc}); using unbatched GPU inference.")
+        return None
+
+
+def _get_model(size: str) -> tuple[object, str, object | None]:
     """GPU-first, CPU-always-works fallback. The "consumer laptop
     feasible" constraint (PRD Doc 1 sec 36) means CPU has to work with
     zero setup, but a discrete NVIDIA GPU should get used automatically
@@ -166,11 +201,16 @@ def _get_model(size: str) -> tuple[object, str]:
         ) from exc
 
     try:
-        result = (_build_model(size, "cuda", "float16"), "cuda")
-        print(f"[EduRAG] ASR model '{size}' loaded on GPU (cuda/float16).")
+        gpu_model = _build_model(size, "cuda", "float16")
+        batched = _build_batched_pipeline(gpu_model)
+        result = (gpu_model, "cuda", batched)
+        print(
+            f"[EduRAG] ASR model '{size}' loaded on GPU (cuda/float16), "
+            f"batched={'on' if batched else 'off'}."
+        )
     except Exception as exc:
         print(f"[EduRAG] ASR model '{size}' could not load on GPU ({exc}); using CPU (int8).")
-        result = (_build_model(size, "cpu", "int8"), "cpu")
+        result = (_build_model(size, "cpu", "int8"), "cpu", None)
 
     _MODEL_CACHE[size] = result
     return result
@@ -215,10 +255,10 @@ class WhisperTranscriber(Transcriber):
 
     def transcribe(self, audio_path: str, language: str | None = None) -> Transcript:
         language = normalize_language_hint(language)
-        model, device = _get_model(self._size)
+        model, device, batched = _get_model(self._size)
 
         try:
-            segments, info = self._run_with_language_fallback(model, audio_path, language)
+            segments, info = self._run_with_language_fallback(model, batched, audio_path, language)
         except Exception as exc:
             if device != "cuda":
                 raise TranscriptionError(f"Transcription failed: {exc}") from exc
@@ -230,31 +270,36 @@ class WhisperTranscriber(Transcriber):
             # of failing every source that comes after this one.
             print(f"[EduRAG] GPU inference failed ({exc}); switching to CPU (int8) for '{self._size}'.")
             model = _build_model(self._size, "cpu", "int8")
-            _MODEL_CACHE[self._size] = (model, "cpu")
+            _MODEL_CACHE[self._size] = (model, "cpu", None)
             try:
-                segments, info = self._run_with_language_fallback(model, audio_path, language)
+                segments, info = self._run_with_language_fallback(model, None, audio_path, language)
             except Exception as retry_exc:
                 raise TranscriptionError(f"Transcription failed: {retry_exc}") from retry_exc
 
         return Transcript(language=info.language, segments=segments)
 
-    def _run_with_language_fallback(self, model, audio_path: str, language: str | None):
+    def _run_with_language_fallback(self, model, batched, audio_path: str, language: str | None):
         try:
-            return self._run(model, audio_path, language)
+            return self._run(model, batched, audio_path, language)
         except ValueError as exc:
             if language is not None and "not a valid language code" in str(exc):
                 # The normalized hint still wasn't one faster-whisper
                 # recognizes (a handful of yt-dlp/locale codes don't map
                 # 1:1 onto Whisper's list) — auto-detect rather than
                 # failing the whole source over a metadata quirk.
-                return self._run(model, audio_path, None)
+                return self._run(model, batched, audio_path, None)
             raise
 
     @staticmethod
-    def _run(model, audio_path: str, language: str | None):
-        segments_iter, info = model.transcribe(
-            audio_path, language=language, word_timestamps=True, vad_filter=True
-        )
+    def _run(model, batched, audio_path: str, language: str | None):
+        # Sprint 7: prefer the batched pipeline (GPU only, see
+        # _build_batched_pipeline) for the long-audio throughput win; same
+        # weights/decode either way, so this never trades accuracy for speed.
+        engine = batched if batched is not None else model
+        kwargs = {"language": language, "word_timestamps": True, "vad_filter": True}
+        if batched is not None:
+            kwargs["batch_size"] = settings.asr_batch_size
+        segments_iter, info = engine.transcribe(audio_path, **kwargs)
         segments = []
         for seg in segments_iter:
             words = [
