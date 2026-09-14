@@ -189,6 +189,11 @@ def index_source(db: DbSession, source: Source, job: ProcessingJob) -> None:
     ]
 
     jobs.update_progress(db, job, progress=0.3, stage="EMBEDDING")
+    # Commit before embedding -- can take a real while for a full lecture's
+    # worth of chunks, and (see app/db/session.py) holding this write open
+    # for that whole duration is exactly what caused the live "database is
+    # locked" crash elsewhere in the pipeline.
+    db.commit()
 
     embedder = get_embedder()
     try:
@@ -198,6 +203,7 @@ def index_source(db: DbSession, source: Source, job: ProcessingJob) -> None:
         raise IndexingError(f"Embedding failed: {exc}") from exc
 
     jobs.update_progress(db, job, progress=0.6, stage="WRITING_VECTOR_INDEX")
+    db.commit()  # same reasoning as above -- the qdrant upsert below is a separate store, no reason to hold SQLite's writer lock through it
 
     try:
         from qdrant_client.models import PointStruct
@@ -236,6 +242,7 @@ def index_source(db: DbSession, source: Source, job: ProcessingJob) -> None:
         )
 
     jobs.update_progress(db, job, progress=0.85, stage="BUILDING_SPARSE_INDEX")
+    db.commit()
 
     try:
         _rebuild_bm25_index(db, source.session_id)

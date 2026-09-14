@@ -327,6 +327,14 @@ def transcribe_source(db: DbSession, source: Source, job: ProcessingJob) -> None
     if audio_artifact is None:
         raise TranscriptionError("No audio artifact found for this source — audio extraction may have failed.")
 
+    # Commit before the ASR call below -- by far the slowest step in the
+    # whole pipeline (minutes, for a real lecture). Leaving the job-start
+    # write above uncommitted for that entire duration would hold SQLite's
+    # one write lock the whole time and block every other write in the
+    # app, exactly the live "database is locked" bug this was confirmed
+    # to cause (see app/db/session.py's docstring for the full story).
+    db.commit()
+
     transcript = _get_transcriber().transcribe(audio_artifact.storage_path, language=source.language)
     if not transcript.segments:
         raise TranscriptionError("No speech was detected in the audio.")

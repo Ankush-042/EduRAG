@@ -223,6 +223,15 @@ class SourceIngestionService:
 
         sources.update_source_status(self.db, source, "DOWNLOADING")
         jobs.start_job(self.db, job, stage="DOWNLOADING")
+        # Commit BEFORE the slow yt-dlp call below, not after -- the real
+        # root cause of the live "database is locked" crash (confirmed on
+        # real hardware, mid-download): without this, the write above
+        # stays open in an uncommitted transaction for the ENTIRE download
+        # (SQLite allows exactly one open writer at a time, even under
+        # WAL), blocking every other write in the app -- including the
+        # UI's own per-rerun session touch -- for however long the
+        # download takes, not just for the instant of this one write.
+        self.db.commit()
 
         out_template = str(Path(settings.media_dir) / f"{source.id}.%(ext)s")
         ydl_opts = {
@@ -379,6 +388,7 @@ class SourceIngestionService:
     def _extract_audio(self, source: Source, job) -> None:
         sources.update_source_status(self.db, source, "EXTRACTING")
         jobs.update_progress(self.db, job, progress=0.5, stage="EXTRACTING_AUDIO")
+        self.db.commit()  # release the write lock before the ffmpeg subprocess runs
 
         audio_path = (Path(settings.audio_dir) / f"{source.id}.wav").resolve()
         _extract_audio_ffmpeg(self._media_path, audio_path)
