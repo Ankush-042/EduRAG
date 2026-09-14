@@ -85,6 +85,31 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     local_generation_model: str = ""
 
+    # --- Contextual retrieval (Sprint 9) ----------------------------------
+    # Real LLM-based contextual enrichment (app/services/indexing.py),
+    # replacing the deterministic title/section/timestamp prefix that
+    # stood in for it since Sprint 4 (see that module's docstring for the
+    # original scope decision and why it's now safe to revisit: by Sprint
+    # 9, GROQ_API_KEY is already required for Q&A generation to work at
+    # all, so indexing depending on it too is no longer taking on a new
+    # failure mode). enable_llm_contextualization is a single kill switch
+    # back to the old deterministic-only behavior without touching code --
+    # e.g. for a fully offline run with no Groq key. openai/gpt-oss-20b is
+    # Groq's fastest current production model (~1000 tok/s, per
+    # console.groq.com/docs/models) and the small sibling of
+    # generation_model above (openai/gpt-oss-120b) -- same provider family
+    # already proven to work against this app's Groq integration, just the
+    # faster/cheaper tier appropriate for a short per-chunk blurb rather
+    # than a full answer. contextualization_max_workers bounds a
+    # ThreadPoolExecutor (indexing.py) so a full lecture's worth of chunks
+    # get contextualized concurrently rather than one Groq round-trip at a
+    # time -- the difference between this being unnoticeable and this
+    # visibly slowing down ingestion on a long source.
+    enable_llm_contextualization: bool = True
+    contextualization_model: str = "openai/gpt-oss-20b"
+    contextualization_timeout_s: float = 8.0
+    contextualization_max_workers: int = 8
+
     # --- Retrieval tuning ------------------------------------------------
     max_retrieval_candidates: int = 30
     top_k_evidence: int = 6
