@@ -14,21 +14,42 @@ start to finish); it stopped being fine the moment a background pipeline
 thread and the UI's polling thread both hold connections open
 concurrently, which is exactly Sprint 7's whole point.
 
-Fix: WAL (write-ahead log) mode, SQLite's own documented answer to this
--- readers no longer block on a writer (and vice versa) at all, they
-just read the last-committed snapshot from the WAL file. This is set via
-PRAGMA on every new connection (WAL is persisted in the DB file itself
-once set, but setting it defensively on every connect is cheap and
-guards against a stale journal-mode DB file predating this fix). The
-`timeout` connect arg stays as a second line of defense for the one
-case WAL doesn't fully remove -- two connections trying to WRITE at the
-literal same instant."""
+Fix, part 1: WAL (write-ahead log) mode, SQLite's own documented answer
+to this -- readers no longer block on a writer (and vice versa) at all,
+they just read the last-committed snapshot from the WAL file. Confirmed
+actually taking effect on real hardware (data/edurag.db-wal and
+-shm exist and are non-empty -- SQLite only creates those files after a
+successful `PRAGMA journal_mode=WAL`, so this part IS active).
 
+Fix, part 2: WAL mode still only allows ONE writer at a time -- it
+removes reader/writer blocking, not writer/writer blocking. That
+residual case (two threads' sessions both trying to write within the
+same short window -- exactly what a background pipeline thread and the
+UI's polling thread can do) still raised "database is locked" even with
+WAL active and busy_timeout set, on real hardware, immediately, with no
+visible wait -- meaning something about how that specific contention
+surfaced wasn't being smoothed over by the busy-timeout wait at all.
+Rather than keep guessing at the exact interleaving (double Streamlit
+script runs? a stale thread from an earlier interrupted run? something
+else?) with no way to attach a debugger to the actual failure, this
+makes the fix independent of the exact mechanism: every Session this
+app hands out automatically retries a flush/commit that fails with
+"database is locked", with exponential backoff, before giving up. SQLite
+write locks are inherently transient (the other writer finishes in
+milliseconds under normal operation) -- if this app's OWN code is the
+only thing ever writing to this file, no genuine deadlock is possible,
+so a bounded retry is a correctness fix here, not a band-aid over a
+real problem it can't resolve. If retries are ever exhausted, that's
+new, real evidence (something is actually stuck, not just slow) worth
+looking at properly rather than something to retry forever."""
+
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
@@ -75,7 +96,36 @@ if _is_sqlite:
             cursor.close()
 
 
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+def _retry_on_locked(fn, retries: int = 8, base_delay: float = 0.05):
+    """Retries fn() on a SQLite "database is locked" OperationalError with
+    exponential backoff (~6s worst case across 8 attempts), re-raising
+    immediately for any other error and re-raising the lock error itself
+    once retries run out. Safe to retry blindly: fn is always exactly
+    Session.flush/Session.commit, and a failed flush/commit never
+    partially applies -- there's nothing to undo before trying again."""
+    for attempt in range(retries):
+        try:
+            return fn()
+        except OperationalError as exc:
+            if "database is locked" not in str(exc).lower() or attempt == retries - 1:
+                raise
+            time.sleep(base_delay * (2**attempt))
+
+
+class _RetryingSession(Session):
+    """A Session whose flush()/commit() absorb transient SQLite lock
+    contention instead of surfacing it as a crash -- see the module
+    docstring's "Fix, part 2". Every SessionLocal() in this app gets this
+    behavior automatically; no call site needs to know about it."""
+
+    def flush(self, *args, **kwargs):
+        return _retry_on_locked(lambda: Session.flush(self, *args, **kwargs))
+
+    def commit(self):
+        return _retry_on_locked(lambda: Session.commit(self))
+
+
+SessionLocal = sessionmaker(bind=engine, class_=_RetryingSession, autoflush=False, autocommit=False)
 
 
 @contextmanager
