@@ -61,8 +61,13 @@ class Settings(BaseSettings):
     # Fast external inference is the primary generation path (TRD Doc 2
     # sec 25/48); a local model is the fallback only (sec 49), never the
     # default, per the accuracy-over-local-purity call made earlier.
+    #
+    # generation_model was llama-3.3-70b-versatile, which Groq
+    # decommissioned on 2026-08-16 (console.groq.com/docs/deprecations).
+    # openai/gpt-oss-120b is Groq's own recommended replacement for that
+    # tier -- same production status, same 131K context window.
     generation_provider: str = "groq"
-    generation_model: str = "llama-3.3-70b-versatile"
+    generation_model: str = "openai/gpt-oss-120b"
     groq_api_key: str = ""
     local_generation_model: str = ""
 
