@@ -28,12 +28,13 @@ app/db/models/conversation.py) is computed, per assistant message, as:
                        treated as no better than "can't verify" rather than
                        silently upgraded to PARTIALLY_GROUNDED.
 
-A CONTRADICTION verdict is recorded at the claim level in
-verification_results either way (so it's inspectable later) but never
-lifts grounding_status toward GROUNDED/PARTIALLY_GROUNDED on its own --
-only an ENTAILMENT verdict does that. This mapping never marks a
-contradicted claim's message as more grounded than the evidence actually
-supports.
+A NOT_SUPPORTED verdict (app/services/grounding.py -- claim scored below
+the supported/hallucinated threshold against its best-matching evidence)
+is recorded at the claim level in verification_results either way (so
+it's inspectable later) but never lifts grounding_status toward
+GROUNDED/PARTIALLY_GROUNDED on its own -- only an ENTAILMENT verdict does
+that. This mapping never marks an unsupported claim's message as more
+grounded than the evidence actually supports.
 """
 
 from __future__ import annotations

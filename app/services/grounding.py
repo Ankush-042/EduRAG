@@ -1,20 +1,38 @@
-"""Sprint 6 (part 2) — claim-level grounding verification via a local NLI
-(natural language inference) model (TRD Doc 2 sec 27-30). Deliberately not
-a second LLM call asking "is this grounded?" — a small, local, purpose-
-built entailment classifier is cheap, deterministic, and can't be talked
-out of a verdict the way a generative model can be.
+"""Sprint 6 (part 2) — claim-level grounding verification via a local
+hallucination-detection model (TRD Doc 2 sec 27-30). Deliberately not a
+second LLM call asking "is this grounded?" — a small, local, purpose-built
+verifier is cheap, deterministic, and can't be talked out of a verdict the
+way a generative model can be.
 
-Label-order correctness note (read before touching _LABELS): this was
-researched, not guessed. cross-encoder/nli-deberta-v3-base's own official
-model card (huggingface.co/cross-encoder/nli-deberta-v3-base) documents
-its output order as label_mapping = ['contradiction', 'entailment',
-'neutral'], selected via argmax() over that fixed order. Getting this
-backwards would silently invert every grounding verdict this app ever
-produces — the single most dangerous possible bug in an "accuracy-first"
-app, because a flipped verdict looks exactly as confident as a correct
-one. If nli_model in config.py is ever changed to a different checkpoint,
-_LABELS must be re-verified against *that* model's own card before
-shipping — never assumed to match this one.
+Model history: this originally used cross-encoder/nli-deberta-v3-base (a
+generic SNLI/MultiNLI sentence-pair classifier). Real dumps of production
+grounding runs (scripts/dump_last_answer.py) showed it giving confidently
+wrong verdicts (NEUTRAL/CONTRADICTION at ~0.97-0.995 "confidence") on
+claims that were genuinely well-supported by the retrieved evidence, once
+the label-order hypothesis was empirically ruled out
+(scripts/verify_nli_labels.py confirmed the label mapping was correct).
+Root cause: that model is trained on short, clean sentence pairs, and is a
+poor fit for this app's actual inputs — long, disfluent, raw video-
+transcript premises paired with paraphrased, multi-clause LLM-generated
+claims.
+
+Replacement: vectara/hallucination_evaluation_model (HHEM-2.1-Open),
+purpose-built for exactly this task (premise = source document, hypothesis
+= generated claim, unlimited context length vs. the old model's 512-token
+cap). It does NOT do 3-way NLI (entailment/neutral/contradiction) — it
+outputs a single continuous "supported by the premise" score in [0, 1].
+0.5 is Vectara's own documented starting threshold
+(docs.vectara.com/docs/hallucination-and-evaluation/hallucination-
+evaluation) for supported-vs-not. Below that we call it NOT_SUPPORTED
+rather than reusing "NEUTRAL"/"CONTRADICTION" — this model can't tell
+those apart, and a fabricated three-way distinction would be worse than
+naming what's actually known. Nothing downstream keys off the specific
+non-ENTAILMENT label (app/services/answering.py's grounding logic only
+ever checks `verdict == "ENTAILMENT"`), so this is a safe rename.
+
+trust_remote_code=True is required to load this model — it runs code
+shipped in the model repo, not just weights. This is a widely-used,
+Vectara-published model, but it's still worth knowing this is happening.
 """
 
 from __future__ import annotations
@@ -27,23 +45,32 @@ settings = get_settings()
 # Same load-once-reuse-per-process pattern as embedding.py / reranking.py.
 _MODEL_CACHE: dict[str, object] = {}
 
-# Verified against cross-encoder/nli-deberta-v3-base's official HuggingFace
-# card — see module docstring. Index into this list is the model's raw
-# output index (the order CrossEncoder.predict(..., apply_softmax=True)
-# returns probabilities in), NOT an arbitrary display order.
-_LABELS = ["CONTRADICTION", "ENTAILMENT", "NEUTRAL"]
+# Vectara's own documented guideline (see module docstring) for the
+# supported-vs-hallucinated cutoff on HHEM's continuous [0, 1] score.
+_SUPPORTED_THRESHOLD = 0.5
 
 
 def _get_model(model_name: str):
     if model_name in _MODEL_CACHE:
         return _MODEL_CACHE[model_name]
 
-    from sentence_transformers import CrossEncoder
+    from transformers import AutoModelForSequenceClassification
 
-    # device explicitly pinned — same reasoning as embedding.py's
-    # _get_model: avoids PyTorch opening a second CUDA context alongside
-    # ctranslate2's in the same process (config.py's torch_model_device).
-    model = CrossEncoder(model_name, device=settings.torch_model_device)
+    # trust_remote_code=True: HHEM ships its own predict() implementation
+    # in the model repo (it isn't a plain classification head), so this
+    # has to be enabled to load it at all.
+    model = AutoModelForSequenceClassification.from_pretrained(
+        model_name, trust_remote_code=True
+    )
+    # Same device-pinning reasoning as embedding.py/config.py's
+    # torch_model_device: keep PyTorch models off the GPU ctranslate2 is
+    # already using in this process, on Windows, to avoid a silent crash.
+    # HHEM is a standard HF PreTrainedModel under trust_remote_code, so
+    # .to(device) is expected to work the same as any other transformers
+    # model -- but this specific model/version combination hasn't been
+    # run yet outside this sandbox (no PyPI access here), so treat the
+    # first real run on your machine as the actual verification of this.
+    model = model.to(settings.torch_model_device)
     _MODEL_CACHE[model_name] = model
     return model
 
@@ -51,14 +78,10 @@ def _get_model(model_name: str):
 class NLIVerifier(EntailmentVerifier):
     """Concrete EntailmentVerifier (app/core/interfaces.py).
 
-    verify(claim, evidence) asks: does `evidence` (the premise — the
-    actual source text) entail `claim` (the hypothesis — one sentence from
-    the generated answer)? That premise/hypothesis order is intentional
-    and matters: reversing it asks a different, wrong question ("does the
-    generated claim imply the source text"), which is meaningless for
-    grounding verification — a short, specific claim essentially never
-    entails a longer, more general source passage even when the claim is
-    perfectly grounded in it.
+    verify(claim, evidence) asks: is `claim` (the hypothesis — one sentence
+    from the generated answer) supported by `evidence` (the premise — the
+    actual source text)? That premise/hypothesis order is intentional and
+    matters: reversing it asks a different, wrong question.
     """
 
     def __init__(self, model_name: str):
@@ -66,15 +89,10 @@ class NLIVerifier(EntailmentVerifier):
 
     def verify(self, claim: str, evidence: str) -> EntailmentResult:
         model = _get_model(self._model_name)
-        scores = model.predict([(evidence, claim)], apply_softmax=True)
-        probabilities = scores[0]
-        # Avoid relying on a numpy-only method like .argmax() here: this
-        # can never be exercised in the sandbox this was written in (no
-        # PyPI access to sentence-transformers there), so the safer,
-        # library-agnostic form is used deliberately rather than assumed
-        # to work against whatever predict() actually returns.
-        best_index = max(range(len(probabilities)), key=lambda i: probabilities[i])
-        return EntailmentResult(verdict=_LABELS[best_index], score=float(probabilities[best_index]))
+        scores = model.predict([(evidence, claim)])
+        score = float(scores[0])
+        verdict = "ENTAILMENT" if score >= _SUPPORTED_THRESHOLD else "NOT_SUPPORTED"
+        return EntailmentResult(verdict=verdict, score=score)
 
 
 def get_verifier() -> NLIVerifier:

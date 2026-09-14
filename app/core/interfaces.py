@@ -62,7 +62,7 @@ class RerankedCandidate:
 
 @dataclass
 class EntailmentResult:
-    verdict: str  # "ENTAILMENT" | "NEUTRAL" | "CONTRADICTION"
+    verdict: str  # "ENTAILMENT" | "NOT_SUPPORTED" -- see app/services/grounding.py
     score: float
 
 

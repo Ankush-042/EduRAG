@@ -10,7 +10,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, UUIDPKMixin, _utcnow
 
-NLI_VERDICTS = ("ENTAILMENT", "NEUTRAL", "CONTRADICTION")
+NLI_VERDICTS = ("ENTAILMENT", "NOT_SUPPORTED")
 
 
 class RetrievalRun(UUIDPKMixin, Base):

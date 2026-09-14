@@ -38,7 +38,12 @@ class Settings(BaseSettings):
     asr_model: str = "faster-whisper:base"
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    nli_model: str = "cross-encoder/nli-deberta-v3-base"
+    # Was cross-encoder/nli-deberta-v3-base -- swapped after real grounding
+    # runs (scripts/dump_last_answer.py) showed it confidently mis-scoring
+    # well-supported claims against noisy transcript evidence. HHEM-2.1
+    # is purpose-built for RAG hallucination detection; see
+    # app/services/grounding.py for the full writeup.
+    nli_model: str = "vectara/hallucination_evaluation_model"
 
     # ASR (transcription.py) runs on ctranslate2, not PyTorch, and is the
     # one model worth GPU-accelerating (whole-video inference). The
