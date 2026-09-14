@@ -32,6 +32,17 @@ alembic>=1.13
 qdrant-client>=1.10
 rank-bm25>=0.2.2
 sentence-transformers>=3.0
+# Pinned <5: the NLI verifier (app/services/grounding.py) loads
+# vectara/hallucination_evaluation_model via trust_remote_code=True. That
+# model's own remote modeling code (last published for transformers 4.39.3,
+# per its config.json) still uses the pre-5.x tied-weights API
+# (_tied_weights_keys). transformers 5.x refactored that internally
+# (all_tied_weights_keys) and breaks loading this model with:
+#   AttributeError: 'HHEMv2ForSequenceClassification' object has no
+#   attribute 'all_tied_weights_keys'
+# -- confirmed by direct traceback on transformers 5.17.0, not assumed.
+# Un-pin only once Vectara ships remote code compatible with transformers 5.
+transformers>=4.39,<5
 faster-whisper>=1.0
 yt-dlp[default]>=2026.8.19
 ffmpeg-python>=0.2.0
