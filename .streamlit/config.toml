@@ -1,11 +1,18 @@
 # Light mode only — non-negotiable per UI/UX spec Doc 3 sec 2.1 / 26.
+#
+# Sprint 11: fixed "sans serif" (with a space) -> "sans-serif" -- the
+# hyphenated form is the one the docs actually specify; this is just a
+# safe global baseline, the real editorial typography (Fraunces
+# headings, Inter body) is applied by app/ui/main.py's own injected
+# <style> block, which doesn't depend on this file being exactly right.
 [theme]
 base = "light"
 primaryColor = "#2F5D50"
 backgroundColor = "#FDFCFA"
 secondaryBackgroundColor = "#F4F1EC"
 textColor = "#1F1F1F"
-font = "sans serif"
+font = "sans-serif"
+showSidebarBorder = false
 
 [browser]
 gatherUsageStats = false

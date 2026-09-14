@@ -188,3 +188,25 @@ def add_verification_result(
     db.add(result)
     db.flush()
     return result
+
+
+def list_verification_results_for_message(db: DbSession, message_id: str) -> list[VerificationResult]:
+    """Sprint 11 (UI retrieval-details panel): Claim has no order column of
+    its own (UUIDPKMixin only -- no created_at, no explicit sequence), but
+    answering.py writes one VerificationResult per claim in the exact same
+    order split_into_claims produced them, and VerificationResult DOES
+    carry created_at -- so ordering by that reconstructs claim order
+    without needing a schema change just for a diagnostics display."""
+    return (
+        db.query(VerificationResult)
+        .filter(VerificationResult.message_id == message_id)
+        .order_by(VerificationResult.created_at.asc())
+        .all()
+    )
+
+
+def get_claims_by_ids(db: DbSession, claim_ids: list[str]) -> dict[str, Claim]:
+    if not claim_ids:
+        return {}
+    rows = db.query(Claim).filter(Claim.id.in_(claim_ids)).all()
+    return {claim.id: claim for claim in rows}

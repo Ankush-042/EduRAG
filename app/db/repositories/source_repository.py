@@ -44,6 +44,18 @@ def list_sources_for_session(db: DbSession, session_id: str) -> list[Source]:
     )
 
 
+def get_sources_by_ids(db: DbSession, source_ids: list[str]) -> dict[str, Source]:
+    """Sprint 11 (UI evidence/footnotes panel): needs each citation's
+    source title alongside its timestamp, and Evidence rows only carry
+    source_id -- same bulk-fetch-by-id shape as content_repository's
+    get_chunks_by_ids, for the same reason (re-associating rows fetched
+    independently of any single query's natural order)."""
+    if not source_ids:
+        return {}
+    rows = db.query(Source).filter(Source.id.in_(source_ids)).all()
+    return {source.id: source for source in rows}
+
+
 def update_source_status(
     db: DbSession, source: Source, status: str, *, error_message: str | None = None
 ) -> Source:
