@@ -42,6 +42,10 @@ _SYSTEM_PROMPT = (
     "knowledge.\n"
     "4. Be concise and direct — answer the question, don't pad, restate the "
     "question, or add unrelated commentary.\n"
+    "5. Only ever use square brackets for numbered citations like [2] or "
+    "[1, 3] — never for anything else (a variable name, a note, an aside). "
+    "If you need to refer to a variable named x from the material, write "
+    "it as x, not [x].\n"
 )
 
 

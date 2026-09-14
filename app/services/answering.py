@@ -35,6 +35,22 @@ it's inspectable later) but never lifts grounding_status toward
 GROUNDED/PARTIALLY_GROUNDED on its own -- only an ENTAILMENT verdict does
 that. This mapping never marks an unsupported claim's message as more
 grounded than the evidence actually supports.
+
+Sprint 9 finding (real, evidence-based -- three separate live answers
+showed the same pattern before this fix): a claim that legitimately
+synthesizes facts from MULTIPLE retrieved passages -- e.g. "the lecture
+covers integers, floats, and booleans [1] and also strings [4]", where
+ints/floats/bools are stated in passage 1 and strings only in passage 4
+-- was scored against each passage ONE AT A TIME, and no single passage
+fully entails a claim that's true only across their union. That's not a
+verifier defect; it's an artifact of only ever checking one premise at a
+time. Every one of the three real false negatives found in Sprint 8's
+eval run had this exact shape. Fix: when no single evidence passage
+entails a claim, also check it against the full concatenated context
+(all retrieved passages together) before giving up -- see the
+`combined_result` fallback below. This can only ever raise a verdict
+(make grounding_status more accurate), never lower one, since it's
+strictly an additional check on top of the existing per-passage loop.
 """
 
 from __future__ import annotations
@@ -216,6 +232,23 @@ def answer(db: DbSession, session_id: str, question: str) -> AnsweredMessage:
 
         if best_evidence is None or best_result is None:
             continue  # unreachable given the evidence_rows guard above, but never crash on it
+
+        # Sprint 9 fix (see module docstring): a claim that's only true
+        # across MULTIPLE passages combined will never entail against any
+        # one of them alone. Only spend the extra NLI call when the
+        # per-passage loop above didn't already find a clean ENTAILMENT --
+        # this is strictly a second chance, never a way to downgrade a
+        # verdict the per-passage loop already got right.
+        if best_result.verdict != "ENTAILMENT":
+            combined_result = verifier.verify(claim_for_nli, context)
+            if combined_result.verdict == "ENTAILMENT":
+                # Still cite the single passage the claim scored highest
+                # against (best_evidence) -- that's the most useful pointer
+                # for a person checking the citation -- but record the
+                # verdict/score that actually reflects why this claim is
+                # considered grounded (the full retrieved context, not that
+                # one passage in isolation).
+                best_result = combined_result
 
         conversations.add_verification_result(
             db,

@@ -27,7 +27,19 @@ _ABBREVIATIONS = (
 # sentence (or a "[1] ..." citation-led fragment) actually starts with.
 _SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'\[])")
 
-_CITATION_RE = re.compile(r"\[\d+(?:,\s*\d+)*\]")
+# Sprint 9 finding: a real generation run produced a malformed citation
+# ("[x]" instead of a numbered "[1]"), which this regex -- matching only
+# digit lists -- left untouched, so it rode straight through
+# strip_citation_markers() and into the NLI verifier as literal noise on
+# the end of that claim's text (a real contributing factor to that
+# claim's grounding false negative, on top of the multi-passage-synthesis
+# issue answering.py now handles). Widened to also catch a short
+# letter-led bracketed token in citation position -- "[x]", "[Source 2]",
+# "[note]" -- since the generation system prompt (generation.py) commits
+# the model to ONLY ever using brackets for numbered citations, so any
+# other bracketed content appearing is by definition a malformed citation
+# attempt, not meaningful prose to preserve.
+_CITATION_RE = re.compile(r"\[(?:\d+(?:,\s*\d+)*|[A-Za-z][\w\s]{0,15})\]")
 
 # Below this length a "sentence" is almost certainly a stray fragment
 # (leftover punctuation, a lone citation marker) rather than a real,
