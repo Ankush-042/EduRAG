@@ -185,8 +185,27 @@ def _llm_contextualize_chunk(client, model_name: str, chunk, prev_chunk, next_ch
     the caller (_contextualize_chunks) catches per-chunk and keeps that
     chunk's deterministic fallback instead, so this never needs to be
     defensive about its own errors."""
+    from groq import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+    from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+
     prompt = _build_contextualization_prompt(chunk, prev_chunk, next_chunk, section, source)
-    response = client.chat.completions.create(
+    # Same reasoning as generation.py's Sprint 10 hardening: retry only
+    # genuinely transient errors, bounded and explicit, rather than
+    # relying on (or stacking on top of) the Groq SDK's own implicit
+    # retry. Worth doing here even though a per-chunk fallback already
+    # exists -- a chunk that recovers on retry gets the real LLM
+    # contextualization instead of silently settling for the
+    # deterministic fallback over what would've been a transient blip.
+    retryer = Retrying(
+        retry=retry_if_exception_type(
+            (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)
+        ),
+        stop=stop_after_attempt(settings.contextualization_max_attempts),
+        wait=wait_exponential(multiplier=0.5, max=settings.contextualization_retry_max_wait_s),
+        reraise=True,
+    )
+    response = retryer(
+        client.chat.completions.create,
         model=model_name,
         messages=[
             {"role": "system", "content": _CONTEXTUALIZATION_SYSTEM_PROMPT},
@@ -221,7 +240,11 @@ def _contextualize_chunks(chunks, section_for, source: Source) -> list[str]:
     except ImportError:
         return deterministic
 
-    client = Groq(api_key=settings.groq_api_key)
+    # max_retries=0: retry policy is owned explicitly by the tenacity
+    # Retrying inside _llm_contextualize_chunk (same reasoning as
+    # generation.py's Sprint 10 hardening) rather than also left active
+    # here underneath it.
+    client = Groq(api_key=settings.groq_api_key, max_retries=0)
     # Start from the safe fallback for every chunk; each successful LLM
     # call below overwrites just its own index. A total failure of this
     # whole function (e.g. Groq unreachable) still leaves a fully valid,

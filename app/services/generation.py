@@ -19,9 +19,20 @@ Rather than silently faking a "local" path that's actually just Groq
 again, LocalGenerator is a clearly-labelled stub that raises
 GenerationError telling the caller exactly why, instead of ever answering
 un-grounded or pretending a capability exists that doesn't.
+
+Sprint 10 revisit of that decision: re-checked, nothing has changed --
+still no model file on disk, still no llama.cpp/ONNX-type runtime in
+requirements.txt, and adding one now (most such packages need a native
+build step) would be a real, untested new failure mode introduced for a
+capability nobody has asked to actually use offline. The stub stays a
+stub; what Sprint 10 actually adds is retry/timeout hardening around the
+GROQ path itself (see GroqGenerator below), since that's the primary path
+every real turn goes through, not the fallback nobody's exercising.
 """
 
 from __future__ import annotations
+
+from tenacity import Retrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from app.core.config import get_settings
 from app.core.interfaces import Generator
@@ -81,16 +92,47 @@ class GroqGenerator(Generator):
                 "answer generation (see .env.example)."
             )
         try:
-            from groq import Groq
+            from groq import (
+                APIConnectionError,
+                APITimeoutError,
+                Groq,
+                InternalServerError,
+                RateLimitError,
+            )
         except ImportError as exc:
             raise GenerationError(
                 "The 'groq' package isn't installed — run `pip install -r "
                 "requirements.txt` (groq is already listed there)."
             ) from exc
 
-        client = Groq(api_key=self._api_key)
+        # max_retries=0: this generator owns retry policy explicitly via
+        # the tenacity Retrying below (see module docstring) rather than
+        # also leaving the SDK's own implicit retry-on-transient-error
+        # behavior active underneath it — one bounded, inspectable policy
+        # instead of two stacked ones whose combined worst-case latency
+        # isn't obvious from reading either one alone.
+        client = Groq(api_key=self._api_key, max_retries=0)
+
+        # Only retry error types that are genuinely transient (a dropped
+        # connection, a timeout, a 429, a 5xx) -- retrying a 400/401/403/404
+        # (bad request, bad key, no permission, unknown model) would just
+        # burn the same bounded time budget on an error that will never
+        # succeed no matter how many times it's repeated.
+        retryer = Retrying(
+            retry=retry_if_exception_type(
+                (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError)
+            ),
+            stop=stop_after_attempt(settings.generation_max_attempts),
+            wait=wait_exponential(multiplier=0.5, max=settings.generation_retry_max_wait_s),
+            reraise=True,  # without this, tenacity raises its own RetryError
+            # instead of the real underlying exception once attempts are
+            # exhausted -- the except clause below needs the original
+            # exception (and its message) to build a useful GenerationError.
+        )
+
         try:
-            response = client.chat.completions.create(
+            response = retryer(
+                client.chat.completions.create,
                 model=self._model_name,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
@@ -100,6 +142,12 @@ class GroqGenerator(Generator):
                 # / degenerate-output risk of temperature=0 on some models.
                 temperature=0.1,
                 max_tokens=1024,
+                # Explicit per-request timeout, well under the SDK's own
+                # 60s default -- this call sits in the synchronous query
+                # path (TRD's "low latency" requirement), so a single hung
+                # request should fail fast enough to retry or abstain
+                # within a bounded total time, not silently eat a minute.
+                timeout=settings.generation_timeout_s,
             )
         except Exception as exc:  # Groq's SDK raises several distinct error
             # types (auth, rate limit, connection, bad request) — all of

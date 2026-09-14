@@ -85,6 +85,27 @@ class Settings(BaseSettings):
     groq_api_key: str = ""
     local_generation_model: str = ""
 
+    # Sprint 10: explicit, bounded retry/timeout policy for the ANSWER
+    # generation call specifically -- this one sits directly in the
+    # synchronous query path (a person is watching a spinner), unlike
+    # indexing.py's per-chunk contextualization calls, which are on the
+    # slow/tolerant ingestion side. groq-python already auto-retries
+    # transient errors (connection errors, 408/409/429, 5xx) 2x by default
+    # with its own internal backoff (github.com/groq/groq-python README) --
+    # but that default is tuned for batch/background use, not a person
+    # waiting on an answer: its default per-request timeout is 60s, so a
+    # fully-transient failure could silently cost up to 3 attempts x 60s =
+    # 3 minutes before this app even gets to decide the turn failed.
+    # generation.py disables that implicit retry (max_retries=0 on the
+    # Groq client) and replaces it with one explicit, bounded tenacity
+    # policy it fully controls, so the worst case is knowable:
+    # generation_max_attempts x generation_timeout_s, plus capped backoff
+    # between them -- not two stacked, opaque retry loops multiplying each
+    # other's worst case.
+    generation_timeout_s: float = 20.0
+    generation_max_attempts: int = 3
+    generation_retry_max_wait_s: float = 4.0
+
     # --- Contextual retrieval (Sprint 9) ----------------------------------
     # Real LLM-based contextual enrichment (app/services/indexing.py),
     # replacing the deterministic title/section/timestamp prefix that
@@ -109,6 +130,15 @@ class Settings(BaseSettings):
     contextualization_model: str = "openai/gpt-oss-20b"
     contextualization_timeout_s: float = 8.0
     contextualization_max_workers: int = 8
+    # Sprint 10: same bounded, explicit tenacity retry policy as
+    # generation.py's Q&A path (see its config comment above), applied to
+    # each per-chunk contextualization call -- ingestion tolerates more
+    # total latency than a live query does, so this is pure upside: a
+    # chunk that hits a transient error gets a real shot at the LLM
+    # blurb instead of settling immediately for the deterministic
+    # fallback.
+    contextualization_max_attempts: int = 3
+    contextualization_retry_max_wait_s: float = 4.0
 
     # --- Retrieval tuning ------------------------------------------------
     max_retrieval_candidates: int = 30
