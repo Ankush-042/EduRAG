@@ -1,18 +1,18 @@
 # Light mode only — non-negotiable per UI/UX spec Doc 3 sec 2.1 / 26.
 #
-# Colors retuned for the post-Sprint-11 visual redesign (see app/ui/main.py's
-# module docstring) to match the same palette used by its injected <style>
-# block's CSS variables (--edu-accent, --edu-bg, --edu-ink) -- this file is
+# Colors retuned again for the second visual redesign (see app/ui/main.py's
+# module docstring): a plain Material-style light theme in the same blue
+# used by app/ui/main.py's injected <style> block (--edu-accent), rather
+# than the first redesign's warm-paper/forest-green palette. This file is
 # just the safe global baseline Streamlit itself uses for its own native
-# widgets (buttons, inputs, sliders) that the injected CSS doesn't touch, so
-# a text input's focus ring or a native button matches the rest of the page
-# instead of clashing with it.
+# widgets that the injected CSS doesn't otherwise override, so anything not
+# explicitly restyled still matches instead of clashing with it.
 [theme]
 base = "light"
-primaryColor = "#1F6F5C"
-backgroundColor = "#FBF9F3"
-secondaryBackgroundColor = "#F3EFE2"
-textColor = "#1B1B16"
+primaryColor = "#1A73E8"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F8F9FB"
+textColor = "#1F1F1F"
 font = "sans-serif"
 showSidebarBorder = false
 

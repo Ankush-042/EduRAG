@@ -9,64 +9,60 @@ workspace and evidence rendering still land in later sprints — this file
 keeps growing into `AppShell` incrementally rather than being scaffolded
 as dead UI upfront (Doc 3 sec 40).
 
-Sprint 11 (UI polish): sources moved into a persistent sidebar, chat
-bubbles replaced with an editorial Q&A layout, custom pill badges,
-Fraunces/Inter typography, a per-answer "Retrieval & grounding details"
-panel.
+Sprint 11: sources moved into a persistent sidebar, chat bubbles replaced
+with an editorial Q&A layout, custom badges, a per-answer "Retrieval &
+grounding details" panel.
 
-Post-Sprint-11 visual redesign (his explicit feedback: the UI "felt like
-a normal RAG-over-docs tool" and needed to look nothing like one): a full
-presentation-layer pass, still zero changes to DB access, ingestion,
-retrieval, generation, or grounding logic below. What changed and why:
+Second visual redesign (his explicit direction: the first restyle "looked
+seriously bad," must "look proff," and should look like NotebookLM's own
+UI, just in light mode): this is a full second pass over the presentation
+layer only — still zero changes to DB access, ingestion, retrieval,
+generation, or grounding logic below. What changed from the first
+redesign, and why:
 
-  - A real visual identity instead of a generic light theme: a warm
-    "paper" background, a forest-green/amber/terracotta status language
-    (not default red/yellow/green alert colors), and a third typeface —
-    JetBrains Mono — used ONLY for technical/numeric content (timestamps,
-    scores, durations). Serif headings + sans body + mono numbers is a
-    deliberate signal: "prose is generated, numbers are measured" — which
-    is the actual, true story of how this app works, and nothing a
-    generic ChatGPT-wrapper RAG demo bothers to visually distinguish.
-  - A real brand mark (inline SVG: a play-triangle inside a ring — "video,
-    verified") used in the header, the empty state, and nowhere else —
-    consistent, not decorative noise.
-  - A real empty state (a 3-step "how this works" strip) replacing a bare
-    st.info() line — the first thing a visitor with no sources yet sees
-    is currently the least distinctive part of the old UI.
-  - Status/grounding badges gained an icon glyph (✓ / ◐ / ✕ / – / ?)
-    instead of color alone — color-only status communication is both a
-    generic-dashboard tell and a real (if minor) accessibility gap.
-  - Source cards in the sidebar gained a colored top accent keyed to
-    status, and the progress bar is now hand-built (a div with a
-    percentage width, not st.progress()) so its exact look is controlled
-    rather than inherited from Streamlit's internal (version-fragile)
-    widget markup.
-  - Evidence citations render as a real footnote rail: a circular rank
-    chip, a monospace timecode chip, and the quoted passage in an actual
-    blockquote treatment with a left accent bar — instead of a flat
-    "meta line + text line" list.
-  - The retrieval/grounding diagnostics panel no longer prints raw
-    "retrieval 0.031 · rerank 4.207 · NLI 0.812" number soup. NLI score is
-    genuinely a 0-1 probability-like value (grounding.py's HHEM output),
-    so it gets an honest horizontal meter with a marker at the real 0.5
-    decision threshold. Retrieval (RRF-fused, see retrieval.py) and rerank
-    (cross-encoder logit, unbounded, see reranking.py) scores are NOT
-    0-1-bounded — rendering them as percentage-fill bars would fabricate
-    false precision and could visually mis-rank candidates (e.g. a
-    reasonable RRF score like 0.03 would draw as a nearly-empty bar).
-    Those two stay clean monospace numeric chips instead: a real style
-    upgrade over the old plain text without inventing a scale that isn't
-    there.
-  - Citation markers in answer prose render as small filled chips (still
-    "[1]"-shaped, still exactly what's stored) rather than plain colored
-    bracket text.
+  - The whole visual language moved from an editorial/serif "warm paper"
+    look to a plain, calm Material-style light theme -- white/near-white
+    surfaces, a light-gray "Sources" panel, a single blue accent
+    (#1A73E8, the same blue Google's own products use), rounded cards and
+    pill controls, one typeface (Roboto) everywhere. No serif display
+    font, no monospace flourish for numbers -- both were part of the
+    first pass's "distinctive editorial" bet, which is exactly what he
+    said didn't land. NotebookLM's actual UI doesn't use a second or
+    third typeface either; matching that meant removing them, not tuning
+    them.
+  - The sidebar is labeled "Sources" (NotebookLM's own label for this
+    panel) rather than "Your sources".
+  - Citations now render as small solid circular numbered chips, closer
+    to NotebookLM's own inline citation-marker look, instead of the first
+    pass's rectangular bracket chip.
+  - The elaborate "3-step how this works" empty state is gone -- replaced
+    with a single calm centered icon + heading + one line, matching
+    NotebookLM's own minimal "no sources yet" state instead of a
+    marketing-strip treatment.
+  - Native Streamlit controls (buttons, the question text input, the
+    tabs) are now styled too, via stable hooks: `data-testid` attributes
+    (Streamlit's own documented, versioned-stable styling hooks -- not
+    its internal, version-fragile CSS module classes) and standard ARIA
+    attributes (`aria-selected`), never anything that could silently stop
+    matching on a future Streamlit upgrade. The first pass only styled
+    Claude's own hand-written HTML and left native widgets looking like
+    default Streamlit -- a big part of why it still read as "a Streamlit
+    app" rather than a real product.
+  - Evidence excerpts render inside a soft rounded gray block (closer to
+    how NotebookLM shows a cited passage) instead of a left-border
+    blockquote.
+  - Retrieval/rerank/NLI score handling is UNCHANGED from the first
+    redesign and still deliberately not identical to each other: the NLI
+    score is genuinely 0-1 (grounding.py's HHEM output) so it keeps its
+    honest meter with a marker at the real 0.5 threshold; retrieval
+    (RRF-fused) and rerank (cross-encoder logit) scores are NOT
+    0-1-bounded (confirmed against retrieval.py/reranking.py before the
+    first redesign), so they stay plain small chips rather than a
+    fabricated percentage bar.
 
-Global color/font baseline lives in .streamlit/config.toml (safe, stable,
-officially documented keys) and was re-tuned to match this palette.
-Everything more specific is one injected <style> block below, styling
-only Claude's own hand-written HTML classes — never Streamlit's internal
-widget classes, which change across versions and can't be verified
-against the exact version installed on his machine from this sandbox.
+Global color/font baseline lives in .streamlit/config.toml and was
+re-tuned again to match this palette. Everything more specific is one
+injected <style> block below.
 """
 
 import html
@@ -132,6 +128,15 @@ _STATUS_BADGE_VARIANT = {
     "CANCELLED": "unverified",
 }
 
+# Source-type glyph + brand-ish color, shown in a small colored circle next
+# to each sidebar card's title -- NotebookLM color-codes its own source
+# icons by type (PDF red, doc blue, ...); this is the same idea applied to
+# EduRAG's two actual source types.
+_SOURCE_TYPE_META = {
+    "YOUTUBE": ("▸", "#EA4335"),      # YouTube red
+    "LOCAL_VIDEO": ("▸", "#1A73E8"),  # accent blue
+}
+
 # ---------------------------------------------------------------------------
 # Presentation-only styling + small building blocks. Nothing below this
 # banner (down to _ensure_schema) touches app state.
@@ -139,57 +144,83 @@ _STATUS_BADGE_VARIANT = {
 
 _CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
 
 :root {
-    --edu-bg: #FBF9F3;
+    --edu-bg: #FFFFFF;
+    --edu-bg-panel: #F8F9FB;
     --edu-card: #FFFFFF;
-    --edu-ink: #1B1B16;
-    --edu-muted: #6E6B5C;
-    --edu-faint: #96927F;
-    --edu-line: #E9E3D4;
-    --edu-accent: #1F6F5C;
-    --edu-accent-dark: #164F41;
-    --edu-accent-soft: #E4EFEA;
-    --edu-amber: #B07A2E;
-    --edu-amber-soft: #F6EDDD;
-    --edu-terracotta: #A6432E;
-    --edu-terracotta-soft: #F6E7E2;
-    --edu-slate-soft: #EDEBE3;
+    --edu-ink: #1F1F1F;
+    --edu-muted: #5F6368;
+    --edu-faint: #80868B;
+    --edu-line: #E3E5E8;
+    --edu-accent: #1A73E8;
+    --edu-accent-dark: #0B57D0;
+    --edu-accent-soft: #E8F0FE;
+    --edu-green: #1E8E3E;
+    --edu-green-soft: #E6F4EA;
+    --edu-amber: #B06000;
+    --edu-amber-soft: #FEF3E0;
+    --edu-red: #D93025;
+    --edu-red-soft: #FCE8E6;
+    --edu-slate-soft: #F1F3F4;
 }
 
 html, body,
 [data-testid="stAppViewContainer"],
 [data-testid="stSidebar"] {
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
     background: var(--edu-bg) !important;
 }
 
-/* Subtle warm vignette instead of a flat fill -- reads as "paper", not
-   "default light theme #2". Fixed background so it doesn't scroll/tile. */
-[data-testid="stAppViewContainer"] > .main {
-    background-image: radial-gradient(circle at 15% 0%, rgba(31,111,92,0.05), transparent 45%),
-                       radial-gradient(circle at 100% 20%, rgba(176,122,46,0.045), transparent 40%);
-    background-attachment: fixed;
-}
+[data-testid="stSidebar"] { background: var(--edu-bg-panel) !important; }
 
 [data-testid="stAppViewContainer"] h1,
 [data-testid="stAppViewContainer"] h2,
-[data-testid="stAppViewContainer"] h3,
-.edu-app-title, .edu-qa-question, .edu-detail-subhead, .edu-empty-title {
-    font-family: 'Fraunces', Georgia, serif !important;
+[data-testid="stAppViewContainer"] h3 {
+    font-family: 'Roboto', sans-serif !important;
+    font-weight: 500;
 }
 
-.edu-mono {
-    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace !important;
-}
+.edu-mono { font-family: 'Roboto', sans-serif; }
 
 hr { border-color: var(--edu-line) !important; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #DDD6C4; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #CFC7B0; }
+::-webkit-scrollbar-thumb { background: #D4D7DB; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #C0C4C9; }
+
+/* -- native Streamlit controls, styled via stable data-testid / ARIA
+   hooks only (never Streamlit's internal, version-fragile CSS classes) -- */
+[data-testid="stButton"] button,
+[data-testid="stFormSubmitButton"] button {
+    border-radius: 999px !important;
+    background: var(--edu-accent) !important;
+    color: #fff !important;
+    border: none !important;
+    font-weight: 500 !important;
+    padding: 0.4rem 1.1rem !important;
+    transition: background 0.15s ease, box-shadow 0.15s ease;
+}
+[data-testid="stButton"] button:hover,
+[data-testid="stFormSubmitButton"] button:hover {
+    background: var(--edu-accent-dark) !important;
+    box-shadow: 0 1px 6px rgba(26,115,232,0.35);
+}
+[data-testid="stTextInput"] input {
+    border-radius: 10px !important;
+    border-color: var(--edu-line) !important;
+}
+[data-testid="stTextInput"] input:focus {
+    border-color: var(--edu-accent) !important;
+    box-shadow: 0 0 0 1px var(--edu-accent) !important;
+}
+[data-testid="stFileUploader"] { border-radius: 10px; overflow: hidden; }
+[data-testid="stTabs"] [aria-selected="true"] {
+    color: var(--edu-accent) !important;
+}
+[data-testid="stTabs"] [role="tab"] { font-weight: 500; }
 
 /* -- brand mark -- */
 .edu-mark { color: var(--edu-accent); flex-shrink: 0; display: block; }
@@ -198,107 +229,58 @@ hr { border-color: var(--edu-line) !important; }
 .edu-hero {
     display: flex;
     align-items: center;
-    gap: 0.7rem;
-    margin-bottom: 0.35rem;
+    gap: 0.6rem;
+    margin-bottom: 0.2rem;
 }
 .edu-app-title {
-    font-size: 1.9rem;
-    font-weight: 600;
-    line-height: 1.1;
+    font-size: 1.5rem;
+    font-weight: 500;
+    line-height: 1.2;
     color: var(--edu-ink);
 }
 .edu-app-subtitle {
     color: var(--edu-muted);
-    font-size: 0.98rem;
-    margin: 0.1rem 0 0.55rem 0;
-}
-.edu-hero-tags {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.68rem;
-    font-weight: 500;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--edu-accent-dark);
+    font-size: 0.92rem;
+    margin: 0.15rem 0 1.1rem 0;
     padding-bottom: 1.0rem;
     border-bottom: 1px solid var(--edu-line);
-    margin-bottom: 1.2rem;
 }
-.edu-hero-tags span.sep { color: var(--edu-faint); margin: 0 0.5rem; }
 
 /* -- empty state -- */
 .edu-empty {
     text-align: center;
-    padding: 2.6rem 1rem 1.6rem 1rem;
+    padding: 3rem 1rem 1.6rem 1rem;
 }
-.edu-empty .edu-mark { margin: 0 auto 0.9rem auto; color: var(--edu-accent); }
+.edu-empty .edu-mark { margin: 0 auto 1rem auto; color: var(--edu-faint); }
 .edu-empty-title {
-    font-size: 1.5rem;
-    font-weight: 600;
+    font-size: 1.15rem;
+    font-weight: 500;
     color: var(--edu-ink);
     margin-bottom: 0.35rem;
 }
 .edu-empty-sub {
     color: var(--edu-muted);
-    font-size: 0.95rem;
-    max-width: 30rem;
-    margin: 0 auto 1.8rem auto;
-}
-.edu-steps {
-    display: flex;
-    justify-content: center;
-    gap: 0;
-    max-width: 34rem;
+    font-size: 0.9rem;
+    max-width: 26rem;
     margin: 0 auto;
-}
-.edu-step {
-    flex: 1;
-    padding: 0 0.6rem;
-    position: relative;
-}
-.edu-step::after {
-    content: "";
-    position: absolute;
-    top: 0.85rem;
-    right: -0.1rem;
-    width: 0.9rem;
-    height: 1px;
-    background: var(--edu-line);
-}
-.edu-step:last-child::after { display: none; }
-.edu-step-num {
-    width: 1.7rem;
-    height: 1.7rem;
-    line-height: 1.7rem;
-    border-radius: 50%;
-    background: var(--edu-accent-soft);
-    color: var(--edu-accent-dark);
-    font-family: 'JetBrains Mono', monospace;
-    font-weight: 600;
-    font-size: 0.82rem;
-    margin: 0 auto 0.5rem auto;
-}
-.edu-step-label {
-    font-size: 0.82rem;
-    color: var(--edu-ink);
-    font-weight: 500;
-    line-height: 1.35;
 }
 
 /* -- sidebar -- */
 .edu-sidebar-title {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
-    font-family: 'Fraunces', Georgia, serif;
-    font-size: 1.2rem;
-    font-weight: 600;
-    color: var(--edu-ink);
-    margin-bottom: 0.1rem;
-}
-.edu-sidebar-title .edu-mark { width: 18px; height: 18px; }
-.edu-sidebar-subtitle {
+    gap: 0.4rem;
+    font-size: 0.95rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
     color: var(--edu-muted);
-    font-size: 0.83rem;
+    margin-bottom: 0.15rem;
+}
+.edu-sidebar-title .edu-mark { width: 16px; height: 16px; }
+.edu-sidebar-subtitle {
+    color: var(--edu-faint);
+    font-size: 0.8rem;
     margin-bottom: 0.9rem;
 }
 .edu-card-accent {
@@ -308,41 +290,50 @@ hr { border-color: var(--edu-line) !important; }
 }
 .edu-source-row {
     display: flex;
-    align-items: baseline;
-    gap: 0.4rem;
-    margin-bottom: 0.15rem;
+    align-items: center;
+    gap: 0.45rem;
+    margin-bottom: 0.2rem;
 }
-.edu-source-glyph { color: var(--edu-faint); font-size: 0.75rem; }
+.edu-source-glyph {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.3rem;
+    height: 1.3rem;
+    border-radius: 50%;
+    color: #fff;
+    font-size: 0.6rem;
+    flex-shrink: 0;
+}
 .edu-source-title {
-    font-weight: 600;
-    font-size: 0.95rem;
+    font-weight: 500;
+    font-size: 0.92rem;
     color: var(--edu-ink);
 }
 .edu-source-meta {
     color: var(--edu-faint);
     font-size: 0.78rem;
-    margin-bottom: 0.5rem;
+    margin: 0.1rem 0 0.55rem 1.75rem;
 }
 .edu-source-error {
-    color: var(--edu-terracotta);
+    color: var(--edu-red);
     font-size: 0.82rem;
-    background: var(--edu-terracotta-soft);
-    border-radius: 6px;
+    background: var(--edu-red-soft);
+    border-radius: 8px;
     padding: 0.4rem 0.6rem;
     margin-top: 0.3rem;
 }
 
 /* -- hand-built progress bar (not st.progress -- see module docstring) -- */
 .edu-progress-label {
-    font-size: 0.78rem;
+    font-size: 0.76rem;
     color: var(--edu-muted);
     margin-bottom: 0.3rem;
     display: flex;
     justify-content: space-between;
 }
-.edu-progress-label .edu-mono { color: var(--edu-accent-dark); font-weight: 600; }
 .edu-progress-track {
-    height: 6px;
+    height: 5px;
     border-radius: 4px;
     background: var(--edu-slate-soft);
     overflow: hidden;
@@ -350,7 +341,7 @@ hr { border-color: var(--edu-line) !important; }
 .edu-progress-fill {
     height: 100%;
     border-radius: 4px;
-    background: linear-gradient(90deg, var(--edu-accent), #2E8A73);
+    background: var(--edu-accent);
     transition: width 0.6s ease;
 }
 
@@ -361,67 +352,54 @@ hr { border-color: var(--edu-line) !important; }
     gap: 0.32rem;
     font-size: 0.74rem;
     font-weight: 500;
-    letter-spacing: 0.01em;
     padding: 0.22rem 0.62rem;
     border-radius: 999px;
     line-height: 1.4;
 }
 .edu-badge--sm { font-size: 0.68rem; padding: 0.12rem 0.5rem; }
-.edu-badge-icn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.05em;
-    height: 1.05em;
-    border-radius: 50%;
-    font-size: 0.72em;
-    line-height: 1;
-    flex-shrink: 0;
-}
-.edu-badge--grounded    { background: var(--edu-accent-soft); color: var(--edu-accent-dark); }
-.edu-badge--grounded .edu-badge-icn    { background: var(--edu-accent-dark); color: #fff; }
+.edu-badge-icn { font-size: 0.85em; line-height: 1; flex-shrink: 0; }
+.edu-badge--grounded    { background: var(--edu-green-soft); color: var(--edu-green); }
 .edu-badge--partial     { background: var(--edu-amber-soft); color: var(--edu-amber); }
-.edu-badge--partial .edu-badge-icn     { background: var(--edu-amber); color: #fff; }
 .edu-badge--unverified  { background: var(--edu-slate-soft); color: var(--edu-muted); }
-.edu-badge--unverified .edu-badge-icn  { background: var(--edu-muted); color: #fff; }
 .edu-badge--abstained   { background: var(--edu-slate-soft); color: var(--edu-muted); }
-.edu-badge--abstained .edu-badge-icn   { background: var(--edu-muted); color: #fff; }
-.edu-badge--failed      { background: var(--edu-terracotta-soft); color: var(--edu-terracotta); }
-.edu-badge--failed .edu-badge-icn      { background: var(--edu-terracotta); color: #fff; }
+.edu-badge--failed      { background: var(--edu-red-soft); color: var(--edu-red); }
 
 /* -- Q&A workspace -- */
 .edu-qa-block {
-    padding: 1.3rem 0 1.15rem 0;
+    padding: 1.2rem 0 1.1rem 0;
     border-bottom: 1px solid var(--edu-line);
 }
 .edu-qa-block:last-child { border-bottom: none; }
 .edu-qa-question {
-    font-size: 1.28rem;
-    font-style: italic;
+    font-size: 1.08rem;
     font-weight: 500;
     color: var(--edu-ink);
     margin-bottom: 0.6rem;
-    line-height: 1.3;
+    line-height: 1.4;
+    padding-left: 0.7rem;
+    border-left: 3px solid var(--edu-accent);
 }
 .edu-qa-meta { margin-bottom: 0.6rem; }
 .edu-qa-answer {
-    font-size: 0.98rem;
-    line-height: 1.68;
-    color: #2B2B25;
+    font-size: 0.95rem;
+    line-height: 1.65;
+    color: #2B2B2B;
 }
 .edu-qa-answer p { margin: 0 0 0.7rem 0; }
 .edu-qa-answer p:last-child { margin-bottom: 0; }
 .edu-citation {
     display: inline-flex;
     align-items: center;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.66rem;
-    font-weight: 600;
-    background: var(--edu-accent-soft);
-    color: var(--edu-accent-dark);
-    padding: 0.03rem 0.32rem;
-    border-radius: 4px;
-    margin-left: 2px;
+    justify-content: center;
+    min-width: 1.15em;
+    height: 1.15em;
+    font-size: 0.62rem;
+    font-weight: 700;
+    background: var(--edu-accent);
+    color: #fff;
+    border-radius: 50%;
+    padding: 0 0.15em;
+    margin-left: 3px;
     vertical-align: text-top;
 }
 
@@ -435,59 +413,56 @@ hr { border-color: var(--edu-line) !important; }
 .edu-evidence-item:last-child { border-bottom: none; }
 .edu-rank-chip {
     flex-shrink: 0;
-    width: 1.5rem;
-    height: 1.5rem;
-    line-height: 1.5rem;
+    width: 1.4rem;
+    height: 1.4rem;
+    line-height: 1.4rem;
     text-align: center;
     border-radius: 50%;
-    background: var(--edu-accent-soft);
-    color: var(--edu-accent-dark);
-    font-family: 'JetBrains Mono', monospace;
-    font-weight: 600;
-    font-size: 0.72rem;
+    background: var(--edu-accent);
+    color: #fff;
+    font-weight: 700;
+    font-size: 0.68rem;
 }
-.edu-rank-chip--sm { width: 1.2rem; height: 1.2rem; line-height: 1.2rem; font-size: 0.64rem; }
+.edu-rank-chip--sm { width: 1.15rem; height: 1.15rem; line-height: 1.15rem; font-size: 0.6rem; }
 .edu-evidence-body { flex: 1; min-width: 0; }
 .edu-evidence-head {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
     gap: 0.5rem;
-    margin-bottom: 0.3rem;
+    margin-bottom: 0.35rem;
 }
 .edu-evidence-source {
-    font-size: 0.83rem;
-    font-weight: 600;
+    font-size: 0.82rem;
+    font-weight: 500;
     color: var(--edu-ink);
 }
 .edu-timecode {
-    font-family: 'JetBrains Mono', monospace;
     font-size: 0.7rem;
-    color: var(--edu-accent-dark);
-    background: var(--edu-accent-soft);
+    color: var(--edu-muted);
+    background: var(--edu-slate-soft);
     padding: 0.05rem 0.4rem;
-    border-radius: 4px;
+    border-radius: 999px;
 }
 .edu-evidence-text {
-    font-size: 0.89rem;
-    color: #45443A;
+    font-size: 0.87rem;
+    color: #3C4043;
     line-height: 1.55;
     margin: 0;
-    padding-left: 0.65rem;
-    border-left: 2px solid var(--edu-line);
+    background: var(--edu-bg-panel);
+    border-radius: 10px;
+    padding: 0.55rem 0.7rem;
 }
 
 /* -- retrieval/grounding diagnostics -- */
-.edu-detail-latency {
-    font-size: 0.82rem;
-    color: var(--edu-muted);
-    margin-bottom: 0.7rem;
-}
-.edu-detail-latency .edu-mono { color: var(--edu-accent-dark); font-weight: 600; }
+.edu-detail-latency { font-size: 0.8rem; color: var(--edu-muted); margin-bottom: 0.7rem; }
+.edu-detail-latency .edu-mono { color: var(--edu-accent-dark); font-weight: 500; }
 .edu-detail-subhead {
-    font-size: 0.85rem;
-    font-weight: 600;
-    color: #45443A;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--edu-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
     margin: 0.8rem 0 0.4rem 0;
 }
 .edu-score-row {
@@ -499,20 +474,14 @@ hr { border-color: var(--edu-line) !important; }
     color: var(--edu-muted);
 }
 .edu-score-chip {
-    font-family: 'JetBrains Mono', monospace;
     font-size: 0.74rem;
-    color: #45443A;
+    color: #3C4043;
     background: var(--edu-slate-soft);
     padding: 0.06rem 0.4rem;
-    border-radius: 4px;
+    border-radius: 999px;
 }
 .edu-meter-wrap { display: flex; align-items: center; gap: 0.35rem; }
-.edu-meter-label {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 0.68rem;
-    color: var(--edu-faint);
-    width: 1.3em;
-}
+.edu-meter-label { font-size: 0.68rem; color: var(--edu-faint); width: 1.3em; }
 .edu-meter-track {
     position: relative;
     width: 5.5rem;
@@ -536,27 +505,18 @@ hr { border-color: var(--edu-line) !important; }
     background: var(--edu-faint);
     left: 50%;
 }
-.edu-detail-claim {
-    padding: 0.45rem 0;
-    border-bottom: 1px solid var(--edu-line);
-}
+.edu-detail-claim { padding: 0.45rem 0; border-bottom: 1px solid var(--edu-line); }
 .edu-detail-claim:last-child { border-bottom: none; }
-.edu-detail-claim-text {
-    font-size: 0.85rem;
-    color: #2B2B25;
-}
-.edu-detail-claim-meta {
-    font-size: 0.74rem;
-    color: var(--edu-faint);
-    margin-top: 0.15rem;
-}
+.edu-detail-claim-text { font-size: 0.85rem; color: #2B2B2B; }
+.edu-detail-claim-meta { font-size: 0.74rem; color: var(--edu-faint); margin-top: 0.15rem; }
 
 /* -- gentle hover-lift on cards (Streamlit's own bordered container) -- */
 [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
-    transition: box-shadow 0.15s ease, transform 0.15s ease;
+    border-radius: 12px !important;
+    transition: box-shadow 0.15s ease;
 }
 [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"]:hover {
-    box-shadow: 0 4px 16px -8px rgba(27,27,22,0.18);
+    box-shadow: 0 2px 10px rgba(31,31,31,0.10);
 }
 </style>
 """
@@ -566,7 +526,7 @@ hr { border-color: var(--edu-line) !important; }
 # empty state, so it reads as one consistent identity rather than
 # decoration. currentColor means its color is set entirely by the
 # surrounding element's CSS `color`, per the .edu-mark rule above.
-def _mark_svg(size: int = 30) -> str:
+def _mark_svg(size: int = 24) -> str:
     return (
         f'<svg width="{size}" height="{size}" viewBox="0 0 32 32" fill="none" '
         f'xmlns="http://www.w3.org/2000/svg" class="edu-mark">'
@@ -589,10 +549,10 @@ _BADGE_ICON = {
 
 # Status -> accent color for the sidebar source card's top strip.
 _STATUS_ACCENT_COLOR = {
-    "grounded": "var(--edu-accent)",
+    "grounded": "var(--edu-green)",
     "partial": "var(--edu-amber)",
     "unverified": "var(--edu-faint)",
-    "failed": "var(--edu-terracotta)",
+    "failed": "var(--edu-red)",
 }
 
 
@@ -622,7 +582,7 @@ _DISPLAY_CITATION_RE = re.compile(r"\[(\d+(?:,\s*\d+)*)\]")
 
 def _render_answer_html(text: str) -> str:
     escaped = html.escape(text)
-    escaped = _DISPLAY_CITATION_RE.sub(r'<sup class="edu-citation">[\1]</sup>', escaped)
+    escaped = _DISPLAY_CITATION_RE.sub(r'<sup class="edu-citation">\1</sup>', escaped)
     paragraphs = [p for p in escaped.split("\n\n") if p.strip()]
     if not paragraphs:
         paragraphs = [escaped]
@@ -675,39 +635,27 @@ def _format_latency(latency_ms: int | None) -> str:
 
 def render_header() -> None:
     st.markdown(
-        f'<div class="edu-hero">{_mark_svg(30)}'
-        f'<div><div class="edu-app-title">EduRAG</div>'
-        f'<div class="edu-app-subtitle">Learn from your material. Ask anything. Verify the answer.</div>'
-        f"</div></div>",
+        f'<div class="edu-hero">{_mark_svg(26)}'
+        f'<div class="edu-app-title">EduRAG</div></div>',
         unsafe_allow_html=True,
     )
     st.markdown(
-        '<div class="edu-hero-tags">TRANSCRIPT-GROUNDED'
-        '<span class="sep">&middot;</span>TIMESTAMPED CITATIONS'
-        '<span class="sep">&middot;</span>CLAIM-LEVEL VERIFIED</div>',
+        '<div class="edu-app-subtitle">Answers are generated only from your sources, '
+        "with every claim checked against the evidence and cited to the exact moment it came from.</div>",
         unsafe_allow_html=True,
     )
 
 
 def _render_empty_state() -> None:
-    """Replaces a bare st.info() line. The first thing a visitor with no
-    sources yet sees was, until now, the least distinctive part of the
-    whole app -- this makes the actual pipeline (add -> verify -> ask)
-    visible up front instead of a generic placeholder message."""
+    """A single calm centered state -- matches NotebookLM's own minimal
+    "no sources yet" treatment, replacing the first redesign's more
+    elaborate 3-step marketing strip."""
     st.markdown(
-        f'<div class="edu-empty">{_mark_svg(42)}'
-        '<div class="edu-empty-title">Add a lecture to begin</div>'
-        '<div class="edu-empty-sub">Drop in a YouTube lecture or a local video from the sidebar. '
-        "EduRAG transcribes it, checks every answer against what's actually said, "
-        "and cites the exact moment it came from.</div>"
-        '<div class="edu-steps">'
-        '<div class="edu-step"><div class="edu-step-num">1</div>'
-        '<div class="edu-step-label">Add a YouTube link or upload a video</div></div>'
-        '<div class="edu-step"><div class="edu-step-num">2</div>'
-        '<div class="edu-step-label">We transcribe, chunk & index it</div></div>'
-        '<div class="edu-step"><div class="edu-step-num">3</div>'
-        '<div class="edu-step-label">Ask — get cited, verified answers</div></div>'
-        "</div></div>",
+        f'<div class="edu-empty">{_mark_svg(40)}'
+        '<div class="edu-empty-title">Add a source to get started</div>'
+        '<div class="edu-empty-sub">Add a YouTube lecture or a local video from the '
+        "Sources panel on the left. Once it's processed, ask it anything.</div>"
+        "</div>",
         unsafe_allow_html=True,
     )
 
@@ -718,7 +666,7 @@ def render_sidebar(session_id: str) -> None:
     source's status/metadata looks changed."""
     with st.sidebar:
         st.markdown(
-            f'<div class="edu-sidebar-title">{_mark_svg(18)}Your sources</div>',
+            f'<div class="edu-sidebar-title">{_mark_svg(16)}Sources</div>',
             unsafe_allow_html=True,
         )
         st.markdown(
@@ -784,6 +732,7 @@ def render_sidebar(session_id: str) -> None:
                 )
 
                 title = source.title or source.original_name or source.source_url or "Untitled source"
+                type_glyph, type_color = _SOURCE_TYPE_META.get(source.source_type, ("▸", "#5F6368"))
                 meta_bits = [source.source_type.replace("_", " ").title()]
                 duration = _format_duration(source.duration_seconds)
                 if duration:
@@ -791,12 +740,13 @@ def render_sidebar(session_id: str) -> None:
                 if source.language:
                     meta_bits.append(f"Language: {source.language.upper()}")
                 st.markdown(
-                    f'<div class="edu-source-row"><span class="edu-source-glyph">&#9656;</span>'
+                    f'<div class="edu-source-row">'
+                    f'<span class="edu-source-glyph" style="background:{type_color}">{type_glyph}</span>'
                     f'<span class="edu-source-title">{html.escape(title)}</span></div>',
                     unsafe_allow_html=True,
                 )
                 st.markdown(
-                    f'<div class="edu-source-meta edu-mono">{html.escape(" &middot; ".join(meta_bits))}</div>',
+                    f'<div class="edu-source-meta">{html.escape(" · ".join(meta_bits))}</div>',
                     unsafe_allow_html=True,
                 )
 
@@ -827,7 +777,7 @@ def render_sidebar(session_id: str) -> None:
                     pct = progress * 100
                     st.markdown(
                         f'<div class="edu-progress-label"><span>{html.escape(status_label)}</span>'
-                        f'<span class="edu-mono">{pct:.0f}%</span></div>'
+                        f'<span>{pct:.0f}%</span></div>'
                         f'<div class="edu-progress-track">'
                         f'<div class="edu-progress-fill" style="width:{pct:.1f}%"></div></div>',
                         unsafe_allow_html=True,
@@ -872,8 +822,8 @@ def render_sidebar(session_id: str) -> None:
 
 def _render_evidence(db, message_id: str) -> None:
     """Footnote-style citation rail: a numbered rank chip, source title +
-    a monospace timecode chip, the quoted evidence text in a real
-    blockquote treatment underneath."""
+    a timecode chip, the quoted evidence text in a soft rounded block
+    underneath (closer to how NotebookLM shows a cited passage)."""
     evidence_rows = conversation_repository.list_evidence_for_message(db, message_id)
     if not evidence_rows:
         return
@@ -896,7 +846,7 @@ def _render_evidence(db, message_id: str) -> None:
                 f'<div class="edu-evidence-head">'
                 f'<span class="edu-evidence-source">{html.escape(title)}</span>{timecode_html}'
                 f"</div>"
-                f'<blockquote class="edu-evidence-text">{html.escape(text)}</blockquote>'
+                f'<div class="edu-evidence-text">{html.escape(text)}</div>'
                 f"</div></div>",
                 unsafe_allow_html=True,
             )
@@ -976,7 +926,7 @@ def _render_retrieval_details(db, message) -> None:
                     f'<div class="edu-detail-claim">'
                     f'{_badge_html(verdict_label, verdict_variant, small=True)} '
                     f'<span class="edu-detail-claim-text">{html.escape(claim_text)}</span>'
-                    f'<div class="edu-detail-claim-meta edu-mono">{html.escape(" &middot; ".join(meta_bits))}</div>'
+                    f'<div class="edu-detail-claim-meta">{html.escape(" · ".join(meta_bits))}</div>'
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -1034,8 +984,6 @@ def render_ask(session_id: str) -> None:
         else:
             _render_empty_state()
         return
-
-    st.caption("Answers are generated only from your sources, with every claim checked against the evidence.")
 
     with SessionLocal() as db:
         conversation = conversation_repository.get_latest_conversation_for_session(db, session_id)
