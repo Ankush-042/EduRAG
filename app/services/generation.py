@@ -57,6 +57,12 @@ _SYSTEM_PROMPT = (
     "[1, 3] — never for anything else (a variable name, a note, an aside). "
     "If you need to refer to a variable named x from the material, write "
     "it as x, not [x].\n"
+    "6. Write short, single-idea sentences — one fact or one step per "
+    "sentence. If something has multiple steps (like a procedure), give "
+    "each step its own sentence instead of joining them with 'and', a "
+    "dash, or a semicolon. This is so each sentence can be checked "
+    "against the evidence on its own; a sentence that bundles several "
+    "facts together is harder to verify than several short ones.\n"
 )
 
 

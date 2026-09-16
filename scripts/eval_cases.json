@@ -4,35 +4,35 @@
     "question": "what is swapping in python?",
     "note": "Confirmed GROUNDED during the grounding.py (HHEM-2.1) fix verification.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
-    "expect_source_title": "6.100L"
+    "expect_source_title": "Introduction to CS and Programming Using Python"
   },
   {
     "id": "value-of-a",
     "question": "what is value of a?",
     "note": "Confirmed GROUNDED during the grounding.py (HHEM-2.1) fix verification.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
-    "expect_source_title": "6.100L"
+    "expect_source_title": "Introduction to CS and Programming Using Python"
   },
   {
     "id": "value-of-b-before-swap",
     "question": "what is value of b before swapping?",
     "note": "Confirmed GROUNDED during the grounding.py (HHEM-2.1) fix verification.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
-    "expect_source_title": "6.100L"
+    "expect_source_title": "Introduction to CS and Programming Using Python"
   },
   {
     "id": "values-after-swap",
     "question": "what are the values of a and b after swapping?",
     "note": "Confirmed GROUNDED during the grounding.py (HHEM-2.1) fix verification.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
-    "expect_source_title": "6.100L"
+    "expect_source_title": "Introduction to CS and Programming Using Python"
   },
   {
     "id": "mathematical-way-to-swap",
     "question": "what is mathematical way to do it?",
     "note": "Came back UNVERIFIED even after the grounding.py fix -- a genuinely harder multi-step algorithmic paraphrase, not re-diagnosed yet.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
-    "expect_source_title": "6.100L",
+    "expect_source_title": "Introduction to CS and Programming Using Python",
     "known_issue": "UNVERIFIED as of Sprint 6 (grounding.py fix). Revisit once Sprint 9's retrieval tuning lands -- may be a retrieval-recall gap (right evidence not surfacing) rather than a grounding-verifier gap."
   },
   {
@@ -41,7 +41,7 @@
     "note": "Sprint 8 real-run against MIT 6.100L Lecture 1 (youtube xAcTmDO6NTI). Answer was a near-verbatim, correct paraphrase of the cited evidence.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
     "expect_any": ["declarative", "imperative"],
-    "expect_source_title": "6.100L",
+    "expect_source_title": "Introduction to CS and Programming Using Python",
     "known_issue": "Came back PARTIALLY_GROUNDED despite the answer directly paraphrasing its cited evidence -- a HHEM false negative on a multi-clause paraphrase, same pattern as mathematical-way-to-swap. Sprint 9 target."
   },
   {
@@ -50,7 +50,7 @@
     "note": "Sprint 8 real-run against MIT 6.100L Lecture 1. Answer (int, float, bool, string) is explicitly stated in the cited evidence.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
     "expect_any": ["integer", "float", "bool"],
-    "expect_source_title": "6.100L",
+    "expect_source_title": "Introduction to CS and Programming Using Python",
     "known_issue": "Came back UNVERIFIED (zero claims entailed) despite the answer being directly and explicitly supported by its own cited evidence -- the clearest HHEM false negative found so far. Top Sprint 9 priority."
   },
   {
@@ -59,7 +59,7 @@
     "note": "Sprint 8 real-run against MIT 6.100L Lecture 1. Correct, and correctly came back GROUNDED.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
     "expect_any": ["assignment", "bind"],
-    "expect_source_title": "6.100L"
+    "expect_source_title": "Introduction to CS and Programming Using Python"
   },
   {
     "id": "python-tutor-purpose",
@@ -67,7 +67,7 @@
     "note": "Sprint 8 real-run against MIT 6.100L Lecture 1. Correct, and correctly came back GROUNDED.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
     "expect_any": ["step", "debug"],
-    "expect_source_title": "6.100L"
+    "expect_source_title": "Introduction to CS and Programming Using Python"
   },
   {
     "id": "three-learning-outcomes",
@@ -75,7 +75,7 @@
     "note": "Sprint 8 real-run against MIT 6.100L Lecture 1. Correct (knowledge of concepts, programming skill, problem-solving), and correctly came back GROUNDED.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
     "expect_any": ["concept", "programming", "problem"],
-    "expect_source_title": "6.100L"
+    "expect_source_title": "Introduction to CS and Programming Using Python"
   },
   {
     "id": "variable-swap-memory-diagram",
@@ -83,7 +83,7 @@
     "note": "Sprint 8 real-run against MIT 6.100L Lecture 1. The actual lecture content is that the naive swap (y=x; x=y) is buggy -- it loses the original value -- and the fix is a third temp variable.",
     "expect_status": ["GROUNDED", "PARTIALLY_GROUNDED"],
     "expect_any": ["temp", "third variable"],
-    "expect_source_title": "6.100L",
+    "expect_source_title": "Introduction to CS and Programming Using Python",
     "known_issue": "Came back UNVERIFIED, the answer never mentions the temp-variable fix that's the actual point of this part of the lecture (a generation-quality gap, not just a grounding-label one), and it cited evidence with a malformed marker ('[x]' instead of a number) -- a separate citation-generation bug worth investigating on its own."
   }
 ]

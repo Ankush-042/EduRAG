@@ -13,52 +13,46 @@ Sprint 11: sources moved into a persistent sidebar, chat bubbles replaced
 with an editorial Q&A layout, custom badges, a per-answer "Retrieval &
 grounding details" panel.
 
-Second visual redesign (his explicit direction: the first restyle "looked
-seriously bad," must "look proff," and should look like NotebookLM's own
-UI, just in light mode): this is a full second pass over the presentation
-layer only — still zero changes to DB access, ingestion, retrieval,
-generation, or grounding logic below. What changed from the first
-redesign, and why:
+Third and final visual pass, plus one real new feature (his explicit
+framing: this is the last round before deployment). What's new here,
+building on the two earlier presentation-only passes:
 
-  - The whole visual language moved from an editorial/serif "warm paper"
-    look to a plain, calm Material-style light theme -- white/near-white
-    surfaces, a light-gray "Sources" panel, a single blue accent
-    (#1A73E8, the same blue Google's own products use), rounded cards and
-    pill controls, one typeface (Roboto) everywhere. No serif display
-    font, no monospace flourish for numbers -- both were part of the
-    first pass's "distinctive editorial" bet, which is exactly what he
-    said didn't land. NotebookLM's actual UI doesn't use a second or
-    third typeface either; matching that meant removing them, not tuning
-    them.
-  - The sidebar is labeled "Sources" (NotebookLM's own label for this
-    panel) rather than "Your sources".
-  - Citations now render as small solid circular numbered chips, closer
-    to NotebookLM's own inline citation-marker look, instead of the first
-    pass's rectangular bracket chip.
-  - The elaborate "3-step how this works" empty state is gone -- replaced
-    with a single calm centered icon + heading + one line, matching
-    NotebookLM's own minimal "no sources yet" state instead of a
-    marketing-strip treatment.
-  - Native Streamlit controls (buttons, the question text input, the
-    tabs) are now styled too, via stable hooks: `data-testid` attributes
-    (Streamlit's own documented, versioned-stable styling hooks -- not
-    its internal, version-fragile CSS module classes) and standard ARIA
-    attributes (`aria-selected`), never anything that could silently stop
-    matching on a future Streamlit upgrade. The first pass only styled
-    Claude's own hand-written HTML and left native widgets looking like
-    default Streamlit -- a big part of why it still read as "a Streamlit
-    app" rather than a real product.
-  - Evidence excerpts render inside a soft rounded gray block (closer to
-    how NotebookLM shows a cited passage) instead of a left-border
-    blockquote.
-  - Retrieval/rerank/NLI score handling is UNCHANGED from the first
-    redesign and still deliberately not identical to each other: the NLI
-    score is genuinely 0-1 (grounding.py's HHEM output) so it keeps its
-    honest meter with a marker at the real 0.5 threshold; retrieval
-    (RRF-fused) and rerank (cross-encoder logit) scores are NOT
-    0-1-bounded (confirmed against retrieval.py/reranking.py before the
-    first redesign), so they stay plain small chips rather than a
-    fabricated percentage bar.
+  - He supplied a concrete reference mockup for the first time this
+    session (a warm, cream-toned home screen with a serif greeting, soft
+    pastel feature cards, and a prominent search-style ask bar). This
+    pass adopts that visual language for real: warm cream surfaces
+    again (not the second pass's plain white Material look), a serif
+    display face (Fraunces) reserved for two specific "moments of
+    address" -- the empty-state greeting and the question text in each
+    Q&A turn -- with a single clean sans (Inter) for everything else, and
+    a small multi-color pastel palette for the empty-state feature cards
+    instead of one accent color everywhere.
+  - The reference mockup also showed several things that are NOT
+    reflected here on purpose, because they're feature/scope claims, not
+    visual style: a "Recent Sessions" history grid (EduRAG deliberately
+    has no persistent multi-session history -- one temporary session per
+    browser tab, an explicit early decision, not an oversight), a
+    "PDF / Document" source type (never built), "English & Hindi"
+    (English-only was locked in early), and a "Local Mode" toggle
+    (generation goes through Groq's cloud API -- it isn't fully local).
+    Copying those literally would mean either lying about what the app
+    does or a real scope change two steps before deployment; neither is
+    what "elevate the UI" asked for, so the empty-state feature cards
+    below advertise only real, shipped capabilities.
+  - New feature: citation timestamps are no longer just a text label.
+    ingestion.py keeps the original video file on disk permanently after
+    processing (an ORIGINAL_MEDIA artifact, YouTube downloads and local
+    uploads alike -- confirmed by reading that module, not assumed), so
+    a "Watch this moment" toggle under each cited passage can now
+    actually play the source from the exact cited second: st.video() for
+    a YouTube source_url, or the saved local file otherwise. This is the
+    one thing this session's audit flagged as genuinely worth adding
+    (turns "cited to the exact moment" from a label into something you
+    can verify by watching) rather than a cosmetic change. Wrapped in
+    its own try/except -- st.video()'s YouTube-URL + start_time support
+    can't be exercised in this sandbox (no streamlit installed here), so
+    a bad embed degrades to a quiet caption instead of breaking the
+    whole evidence panel.
 
 Global color/font baseline lives in .streamlit/config.toml and was
 re-tuned again to match this palette. Everything more specific is one
@@ -129,47 +123,50 @@ _STATUS_BADGE_VARIANT = {
 }
 
 # Source-type glyph + brand-ish color, shown in a small colored circle next
-# to each sidebar card's title -- NotebookLM color-codes its own source
-# icons by type (PDF red, doc blue, ...); this is the same idea applied to
-# EduRAG's two actual source types.
+# to each sidebar card's title -- the same idea the reference mockup uses
+# (color-coding source icons by type), applied to EduRAG's two actual
+# source types.
 _SOURCE_TYPE_META = {
-    "YOUTUBE": ("▸", "#EA4335"),      # YouTube red
-    "LOCAL_VIDEO": ("▸", "#1A73E8"),  # accent blue
+    "YOUTUBE": ("▸", "#E4572E"),      # warm red-orange
+    "LOCAL_VIDEO": ("▸", "#2F6FED"),  # accent blue
 }
 
 # ---------------------------------------------------------------------------
 # Presentation-only styling + small building blocks. Nothing below this
-# banner (down to _ensure_schema) touches app state.
+# banner (down to _ensure_schema) touches app state, except the video-
+# player feature's own small session_state toggle (clearly marked below).
 # ---------------------------------------------------------------------------
 
 _CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap');
 
 :root {
-    --edu-bg: #FFFFFF;
-    --edu-bg-panel: #F8F9FB;
+    --edu-bg: #FBF7EF;
+    --edu-bg-panel: #F5EFE1;
     --edu-card: #FFFFFF;
-    --edu-ink: #1F1F1F;
-    --edu-muted: #5F6368;
-    --edu-faint: #80868B;
-    --edu-line: #E3E5E8;
-    --edu-accent: #1A73E8;
-    --edu-accent-dark: #0B57D0;
-    --edu-accent-soft: #E8F0FE;
-    --edu-green: #1E8E3E;
-    --edu-green-soft: #E6F4EA;
-    --edu-amber: #B06000;
-    --edu-amber-soft: #FEF3E0;
-    --edu-red: #D93025;
-    --edu-red-soft: #FCE8E6;
-    --edu-slate-soft: #F1F3F4;
+    --edu-ink: #22252B;
+    --edu-muted: #6B6F76;
+    --edu-faint: #93908A;
+    --edu-line: #EAE2D2;
+    --edu-accent: #2F6FED;
+    --edu-accent-dark: #1E56C9;
+    --edu-accent-soft: #E9F0FE;
+    --edu-green: #2F9E58;
+    --edu-green-soft: #E8F5EC;
+    --edu-purple: #7C5CFA;
+    --edu-purple-soft: #F1EDFB;
+    --edu-amber: #B0691F;
+    --edu-amber-soft: #FCEFE1;
+    --edu-red: #C1432B;
+    --edu-red-soft: #F8E9E4;
+    --edu-slate-soft: #F0ECE1;
 }
 
 html, body,
 [data-testid="stAppViewContainer"],
 [data-testid="stSidebar"] {
-    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, Arial, sans-serif;
     background: var(--edu-bg) !important;
 }
 
@@ -178,18 +175,18 @@ html, body,
 [data-testid="stAppViewContainer"] h1,
 [data-testid="stAppViewContainer"] h2,
 [data-testid="stAppViewContainer"] h3 {
-    font-family: 'Roboto', sans-serif !important;
+    font-family: 'Inter', sans-serif !important;
     font-weight: 500;
 }
 
-.edu-mono { font-family: 'Roboto', sans-serif; }
+.edu-serif { font-family: 'Fraunces', Georgia, serif !important; }
 
 hr { border-color: var(--edu-line) !important; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: #D4D7DB; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: #C0C4C9; }
+::-webkit-scrollbar-thumb { background: #DFD6C0; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #CFC4A8; }
 
 /* -- native Streamlit controls, styled via stable data-testid / ARIA
    hooks only (never Streamlit's internal, version-fragile CSS classes) -- */
@@ -200,16 +197,16 @@ hr { border-color: var(--edu-line) !important; }
     color: #fff !important;
     border: none !important;
     font-weight: 500 !important;
-    padding: 0.4rem 1.1rem !important;
+    padding: 0.42rem 1.15rem !important;
     transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 [data-testid="stButton"] button:hover,
 [data-testid="stFormSubmitButton"] button:hover {
     background: var(--edu-accent-dark) !important;
-    box-shadow: 0 1px 6px rgba(26,115,232,0.35);
+    box-shadow: 0 1px 8px rgba(47,111,237,0.32);
 }
 [data-testid="stTextInput"] input {
-    border-radius: 10px !important;
+    border-radius: 12px !important;
     border-color: var(--edu-line) !important;
 }
 [data-testid="stTextInput"] input:focus {
@@ -217,53 +214,86 @@ hr { border-color: var(--edu-line) !important; }
     box-shadow: 0 0 0 1px var(--edu-accent) !important;
 }
 [data-testid="stFileUploader"] { border-radius: 10px; overflow: hidden; }
-[data-testid="stTabs"] [aria-selected="true"] {
-    color: var(--edu-accent) !important;
-}
+[data-testid="stTabs"] [aria-selected="true"] { color: var(--edu-accent) !important; }
 [data-testid="stTabs"] [role="tab"] { font-weight: 500; }
 
 /* -- brand mark -- */
 .edu-mark { color: var(--edu-accent); flex-shrink: 0; display: block; }
 
-/* -- app header (main pane) -- */
+/* -- app header (compact top strip, always shown) -- */
 .edu-hero {
     display: flex;
     align-items: center;
     gap: 0.6rem;
-    margin-bottom: 0.2rem;
+    margin-bottom: 0.15rem;
 }
-.edu-app-title {
-    font-size: 1.5rem;
-    font-weight: 500;
-    line-height: 1.2;
-    color: var(--edu-ink);
-}
+.edu-app-title { font-size: 1.35rem; font-weight: 600; line-height: 1.2; color: var(--edu-ink); }
 .edu-app-subtitle {
     color: var(--edu-muted);
-    font-size: 0.92rem;
-    margin: 0.15rem 0 1.1rem 0;
+    font-size: 0.88rem;
+    margin: 0.1rem 0 1.1rem 0;
     padding-bottom: 1.0rem;
     border-bottom: 1px solid var(--edu-line);
 }
 
-/* -- empty state -- */
-.edu-empty {
-    text-align: center;
-    padding: 3rem 1rem 1.6rem 1rem;
+/* -- empty-state hero (the one big moment, matching the reference) -- */
+.edu-empty-wrap {
+    position: relative;
+    border-radius: 22px;
+    overflow: hidden;
+    padding: 2.6rem 1.8rem 2.2rem 1.8rem;
+    margin-bottom: 1.6rem;
+    background:
+        radial-gradient(circle at 12% 20%, rgba(47,111,237,0.14), transparent 42%),
+        radial-gradient(circle at 88% 0%, rgba(176,105,31,0.14), transparent 40%),
+        radial-gradient(circle at 70% 90%, rgba(124,92,250,0.12), transparent 45%),
+        var(--edu-bg-panel);
 }
-.edu-empty .edu-mark { margin: 0 auto 1rem auto; color: var(--edu-faint); }
+.edu-empty-wrap .edu-mark { margin: 0 auto 1rem auto; color: var(--edu-accent); }
 .edu-empty-title {
-    font-size: 1.15rem;
-    font-weight: 500;
+    font-size: 1.9rem;
+    font-weight: 600;
     color: var(--edu-ink);
-    margin-bottom: 0.35rem;
+    text-align: center;
+    line-height: 1.25;
+    margin-bottom: 0.5rem;
 }
 .edu-empty-sub {
     color: var(--edu-muted);
-    font-size: 0.9rem;
-    max-width: 26rem;
+    font-size: 0.96rem;
+    max-width: 30rem;
+    text-align: center;
+    margin: 0 auto 1.7rem auto;
+}
+.edu-feature-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.75rem;
+    max-width: 34rem;
     margin: 0 auto;
 }
+.edu-feature-card {
+    background: var(--edu-card);
+    border-radius: 14px;
+    padding: 0.9rem 1rem;
+    box-shadow: 0 1px 2px rgba(34,37,43,0.04), 0 6px 18px -10px rgba(34,37,43,0.10);
+}
+.edu-feature-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 2rem;
+    height: 2rem;
+    border-radius: 9px;
+    font-size: 1rem;
+    margin-bottom: 0.5rem;
+}
+.edu-feature-icon--blue   { background: var(--edu-accent-soft); color: var(--edu-accent-dark); }
+.edu-feature-icon--green  { background: var(--edu-green-soft); color: var(--edu-green); }
+.edu-feature-icon--purple { background: var(--edu-purple-soft); color: var(--edu-purple); }
+.edu-feature-icon--amber  { background: var(--edu-amber-soft); color: var(--edu-amber); }
+.edu-feature-title { font-size: 0.86rem; font-weight: 600; color: var(--edu-ink); margin-bottom: 0.15rem; }
+.edu-feature-desc { font-size: 0.78rem; color: var(--edu-muted); line-height: 1.4; }
 
 /* -- sidebar -- */
 .edu-sidebar-title {
@@ -278,83 +308,29 @@ hr { border-color: var(--edu-line) !important; }
     margin-bottom: 0.15rem;
 }
 .edu-sidebar-title .edu-mark { width: 16px; height: 16px; }
-.edu-sidebar-subtitle {
-    color: var(--edu-faint);
-    font-size: 0.8rem;
-    margin-bottom: 0.9rem;
-}
-.edu-card-accent {
-    height: 3px;
-    border-radius: 3px;
-    margin: -0.15rem -0.1rem 0.65rem -0.1rem;
-}
-.edu-source-row {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    margin-bottom: 0.2rem;
-}
+.edu-sidebar-subtitle { color: var(--edu-faint); font-size: 0.8rem; margin-bottom: 0.9rem; }
+.edu-card-accent { height: 3px; border-radius: 3px; margin: -0.15rem -0.1rem 0.65rem -0.1rem; }
+.edu-source-row { display: flex; align-items: center; gap: 0.45rem; margin-bottom: 0.2rem; }
 .edu-source-glyph {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.3rem;
-    height: 1.3rem;
-    border-radius: 50%;
-    color: #fff;
-    font-size: 0.6rem;
-    flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 1.3rem; height: 1.3rem; border-radius: 50%; color: #fff; font-size: 0.6rem; flex-shrink: 0;
 }
-.edu-source-title {
-    font-weight: 500;
-    font-size: 0.92rem;
-    color: var(--edu-ink);
-}
-.edu-source-meta {
-    color: var(--edu-faint);
-    font-size: 0.78rem;
-    margin: 0.1rem 0 0.55rem 1.75rem;
-}
+.edu-source-title { font-weight: 500; font-size: 0.92rem; color: var(--edu-ink); }
+.edu-source-meta { color: var(--edu-faint); font-size: 0.78rem; margin: 0.1rem 0 0.55rem 1.75rem; }
 .edu-source-error {
-    color: var(--edu-red);
-    font-size: 0.82rem;
-    background: var(--edu-red-soft);
-    border-radius: 8px;
-    padding: 0.4rem 0.6rem;
-    margin-top: 0.3rem;
+    color: var(--edu-red); font-size: 0.82rem; background: var(--edu-red-soft);
+    border-radius: 8px; padding: 0.4rem 0.6rem; margin-top: 0.3rem;
 }
 
 /* -- hand-built progress bar (not st.progress -- see module docstring) -- */
-.edu-progress-label {
-    font-size: 0.76rem;
-    color: var(--edu-muted);
-    margin-bottom: 0.3rem;
-    display: flex;
-    justify-content: space-between;
-}
-.edu-progress-track {
-    height: 5px;
-    border-radius: 4px;
-    background: var(--edu-slate-soft);
-    overflow: hidden;
-}
-.edu-progress-fill {
-    height: 100%;
-    border-radius: 4px;
-    background: var(--edu-accent);
-    transition: width 0.6s ease;
-}
+.edu-progress-label { font-size: 0.76rem; color: var(--edu-muted); margin-bottom: 0.3rem; display: flex; justify-content: space-between; }
+.edu-progress-track { height: 5px; border-radius: 4px; background: var(--edu-slate-soft); overflow: hidden; }
+.edu-progress-fill { height: 100%; border-radius: 4px; background: var(--edu-accent); transition: width 0.6s ease; }
 
 /* -- status / grounding pill badges (icon + label) -- */
 .edu-badge {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.32rem;
-    font-size: 0.74rem;
-    font-weight: 500;
-    padding: 0.22rem 0.62rem;
-    border-radius: 999px;
-    line-height: 1.4;
+    display: inline-flex; align-items: center; gap: 0.32rem; font-size: 0.74rem; font-weight: 500;
+    padding: 0.22rem 0.62rem; border-radius: 999px; line-height: 1.4;
 }
 .edu-badge--sm { font-size: 0.68rem; padding: 0.12rem 0.5rem; }
 .edu-badge-icn { font-size: 0.85em; line-height: 1; flex-shrink: 0; }
@@ -365,146 +341,58 @@ hr { border-color: var(--edu-line) !important; }
 .edu-badge--failed      { background: var(--edu-red-soft); color: var(--edu-red); }
 
 /* -- Q&A workspace -- */
-.edu-qa-block {
-    padding: 1.2rem 0 1.1rem 0;
-    border-bottom: 1px solid var(--edu-line);
-}
+.edu-qa-block { padding: 1.2rem 0 1.1rem 0; border-bottom: 1px solid var(--edu-line); }
 .edu-qa-block:last-child { border-bottom: none; }
 .edu-qa-question {
-    font-size: 1.08rem;
-    font-weight: 500;
+    font-family: 'Fraunces', Georgia, serif;
+    font-size: 1.22rem;
+    font-weight: 600;
     color: var(--edu-ink);
     margin-bottom: 0.6rem;
-    line-height: 1.4;
-    padding-left: 0.7rem;
-    border-left: 3px solid var(--edu-accent);
+    line-height: 1.35;
 }
 .edu-qa-meta { margin-bottom: 0.6rem; }
-.edu-qa-answer {
-    font-size: 0.95rem;
-    line-height: 1.65;
-    color: #2B2B2B;
-}
+.edu-qa-answer { font-size: 0.95rem; line-height: 1.65; color: #2B2B2B; }
 .edu-qa-answer p { margin: 0 0 0.7rem 0; }
 .edu-qa-answer p:last-child { margin-bottom: 0; }
 .edu-citation {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.15em;
-    height: 1.15em;
-    font-size: 0.62rem;
-    font-weight: 700;
-    background: var(--edu-accent);
-    color: #fff;
-    border-radius: 50%;
-    padding: 0 0.15em;
-    margin-left: 3px;
-    vertical-align: text-top;
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 1.15em; height: 1.15em; font-size: 0.62rem; font-weight: 700;
+    background: var(--edu-accent); color: #fff; border-radius: 50%; padding: 0 0.15em;
+    margin-left: 3px; vertical-align: text-top;
 }
 
 /* -- evidence / citation rail -- */
-.edu-evidence-item {
-    display: flex;
-    gap: 0.6rem;
-    padding: 0.65rem 0;
-    border-bottom: 1px solid var(--edu-line);
-}
+.edu-evidence-item { display: flex; gap: 0.6rem; padding: 0.65rem 0; border-bottom: 1px solid var(--edu-line); }
 .edu-evidence-item:last-child { border-bottom: none; }
 .edu-rank-chip {
-    flex-shrink: 0;
-    width: 1.4rem;
-    height: 1.4rem;
-    line-height: 1.4rem;
-    text-align: center;
-    border-radius: 50%;
-    background: var(--edu-accent);
-    color: #fff;
-    font-weight: 700;
-    font-size: 0.68rem;
+    flex-shrink: 0; width: 1.4rem; height: 1.4rem; line-height: 1.4rem; text-align: center;
+    border-radius: 50%; background: var(--edu-accent); color: #fff; font-weight: 700; font-size: 0.68rem;
 }
 .edu-rank-chip--sm { width: 1.15rem; height: 1.15rem; line-height: 1.15rem; font-size: 0.6rem; }
 .edu-evidence-body { flex: 1; min-width: 0; }
-.edu-evidence-head {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    margin-bottom: 0.35rem;
-}
-.edu-evidence-source {
-    font-size: 0.82rem;
-    font-weight: 500;
-    color: var(--edu-ink);
-}
-.edu-timecode {
-    font-size: 0.7rem;
-    color: var(--edu-muted);
-    background: var(--edu-slate-soft);
-    padding: 0.05rem 0.4rem;
-    border-radius: 999px;
-}
+.edu-evidence-head { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.35rem; }
+.edu-evidence-source { font-size: 0.82rem; font-weight: 500; color: var(--edu-ink); }
+.edu-timecode { font-size: 0.7rem; color: var(--edu-muted); background: var(--edu-slate-soft); padding: 0.05rem 0.4rem; border-radius: 999px; }
 .edu-evidence-text {
-    font-size: 0.87rem;
-    color: #3C4043;
-    line-height: 1.55;
-    margin: 0;
-    background: var(--edu-bg-panel);
-    border-radius: 10px;
-    padding: 0.55rem 0.7rem;
+    font-size: 0.87rem; color: #3C3B36; line-height: 1.55; margin: 0 0 0.5rem 0;
+    background: var(--edu-bg-panel); border-radius: 10px; padding: 0.55rem 0.7rem;
 }
 
 /* -- retrieval/grounding diagnostics -- */
 .edu-detail-latency { font-size: 0.8rem; color: var(--edu-muted); margin-bottom: 0.7rem; }
-.edu-detail-latency .edu-mono { color: var(--edu-accent-dark); font-weight: 500; }
+.edu-detail-latency .edu-accentnum { color: var(--edu-accent-dark); font-weight: 500; }
 .edu-detail-subhead {
-    font-size: 0.82rem;
-    font-weight: 500;
-    color: var(--edu-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.02em;
-    margin: 0.8rem 0 0.4rem 0;
+    font-size: 0.82rem; font-weight: 500; color: var(--edu-muted);
+    text-transform: uppercase; letter-spacing: 0.02em; margin: 0.8rem 0 0.4rem 0;
 }
-.edu-score-row {
-    display: flex;
-    align-items: center;
-    gap: 0.55rem;
-    padding: 0.2rem 0;
-    font-size: 0.78rem;
-    color: var(--edu-muted);
-}
-.edu-score-chip {
-    font-size: 0.74rem;
-    color: #3C4043;
-    background: var(--edu-slate-soft);
-    padding: 0.06rem 0.4rem;
-    border-radius: 999px;
-}
+.edu-score-row { display: flex; align-items: center; gap: 0.55rem; padding: 0.2rem 0; font-size: 0.78rem; color: var(--edu-muted); }
+.edu-score-chip { font-size: 0.74rem; color: #3C3B36; background: var(--edu-slate-soft); padding: 0.06rem 0.4rem; border-radius: 999px; }
 .edu-meter-wrap { display: flex; align-items: center; gap: 0.35rem; }
 .edu-meter-label { font-size: 0.68rem; color: var(--edu-faint); width: 1.3em; }
-.edu-meter-track {
-    position: relative;
-    width: 5.5rem;
-    height: 5px;
-    border-radius: 3px;
-    background: var(--edu-slate-soft);
-    overflow: visible;
-}
-.edu-meter-fill {
-    position: absolute;
-    inset: 0 auto 0 0;
-    height: 100%;
-    border-radius: 3px;
-    background: var(--edu-accent);
-}
-.edu-meter-threshold {
-    position: absolute;
-    top: -2px;
-    bottom: -2px;
-    width: 1px;
-    background: var(--edu-faint);
-    left: 50%;
-}
+.edu-meter-track { position: relative; width: 5.5rem; height: 5px; border-radius: 3px; background: var(--edu-slate-soft); overflow: visible; }
+.edu-meter-fill { position: absolute; inset: 0 auto 0 0; height: 100%; border-radius: 3px; background: var(--edu-accent); }
+.edu-meter-threshold { position: absolute; top: -2px; bottom: -2px; width: 1px; background: var(--edu-faint); left: 50%; }
 .edu-detail-claim { padding: 0.45rem 0; border-bottom: 1px solid var(--edu-line); }
 .edu-detail-claim:last-child { border-bottom: none; }
 .edu-detail-claim-text { font-size: 0.85rem; color: #2B2B2B; }
@@ -516,7 +404,14 @@ hr { border-color: var(--edu-line) !important; }
     transition: box-shadow 0.15s ease;
 }
 [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"]:hover {
-    box-shadow: 0 2px 10px rgba(31,31,31,0.10);
+    box-shadow: 0 2px 10px rgba(34,37,43,0.10);
+}
+
+/* -- responsive: the 2-col feature grid collapses to 1 col on a narrow
+   window instead of squeezing (matches the sidebar's own default
+   Streamlit collapse behavior on small screens) -- */
+@media (max-width: 640px) {
+    .edu-feature-grid { grid-template-columns: 1fr; }
 }
 </style>
 """
@@ -555,6 +450,16 @@ _STATUS_ACCENT_COLOR = {
     "failed": "var(--edu-red)",
 }
 
+# The empty-state feature cards -- only real, shipped capabilities (see
+# module docstring for what the reference mockup showed that ISN'T here
+# on purpose: PDF sources, Hindi, a "local mode" toggle, session history).
+_EMPTY_STATE_FEATURES = [
+    ("blue", "✓", "Grounded & verified", "Every claim is checked against your sources before you see it."),
+    ("green", "▸", "Timestamped & playable", "Citations jump straight to the exact moment in the video."),
+    ("purple", "⇆", "Hybrid retrieval", "Keyword + semantic search, fused and reranked for relevance."),
+    ("amber", "✦", "Ask across everything", "One question searches every source you've added, together."),
+]
+
 
 def _inject_custom_css() -> None:
     st.markdown(_CUSTOM_CSS, unsafe_allow_html=True)
@@ -571,12 +476,12 @@ def _badge_html(label: str, variant: str, *, small: bool = False) -> str:
 
 
 # Citation markers in a generated answer are always "[n]" or "[n, m]" —
-# generation.py's system prompt (rule 5, added in Sprint 9) commits the
-# model to that shape and nothing else. This regex only ever runs on
-# already-HTML-escaped text for DISPLAY purposes; it never touches the
-# stored message content, so nothing here can corrupt what's persisted
-# or re-affect grounding verification (that runs entirely in
-# answering.py/claims.py, well before this file ever sees the answer).
+# generation.py's system prompt (rule 5) commits the model to that shape
+# and nothing else. This regex only ever runs on already-HTML-escaped
+# text for DISPLAY purposes; it never touches the stored message content,
+# so nothing here can corrupt what's persisted or re-affect grounding
+# verification (that runs entirely in answering.py/claims.py, well
+# before this file ever sees the answer).
 _DISPLAY_CITATION_RE = re.compile(r"\[(\d+(?:,\s*\d+)*)\]")
 
 
@@ -634,8 +539,11 @@ def _format_latency(latency_ms: int | None) -> str:
 
 
 def render_header() -> None:
+    """Compact, always-shown top strip -- the big serif greeting lives in
+    _render_empty_state instead, so it only appears once per session (the
+    first, empty screen), not above every Q&A turn."""
     st.markdown(
-        f'<div class="edu-hero">{_mark_svg(26)}'
+        f'<div class="edu-hero">{_mark_svg(24)}'
         f'<div class="edu-app-title">EduRAG</div></div>',
         unsafe_allow_html=True,
     )
@@ -647,14 +555,25 @@ def render_header() -> None:
 
 
 def _render_empty_state() -> None:
-    """A single calm centered state -- matches NotebookLM's own minimal
-    "no sources yet" treatment, replacing the first redesign's more
-    elaborate 3-step marketing strip."""
+    """The one big "hero" moment, matching the warm/serif/soft-card
+    reference he supplied -- shown only before any source is READY, so
+    it never competes with the Q&A workspace for space. Feature copy is
+    restricted to capabilities that actually exist; see module docstring
+    for what was deliberately left out."""
+    cards_html = "".join(
+        f'<div class="edu-feature-card">'
+        f'<div class="edu-feature-icon edu-feature-icon--{color}">{icon}</div>'
+        f'<div class="edu-feature-title">{html.escape(title)}</div>'
+        f'<div class="edu-feature-desc">{html.escape(desc)}</div>'
+        f"</div>"
+        for color, icon, title, desc in _EMPTY_STATE_FEATURES
+    )
     st.markdown(
-        f'<div class="edu-empty">{_mark_svg(40)}'
-        '<div class="edu-empty-title">Add a source to get started</div>'
+        f'<div class="edu-empty-wrap">{_mark_svg(40)}'
+        '<div class="edu-empty-title edu-serif">Hello — what would you like to learn?</div>'
         '<div class="edu-empty-sub">Add a YouTube lecture or a local video from the '
         "Sources panel on the left. Once it's processed, ask it anything.</div>"
+        f'<div class="edu-feature-grid">{cards_html}</div>'
         "</div>",
         unsafe_allow_html=True,
     )
@@ -732,7 +651,7 @@ def render_sidebar(session_id: str) -> None:
                 )
 
                 title = source.title or source.original_name or source.source_url or "Untitled source"
-                type_glyph, type_color = _SOURCE_TYPE_META.get(source.source_type, ("▸", "#5F6368"))
+                type_glyph, type_color = _SOURCE_TYPE_META.get(source.source_type, ("▸", "#6B6F76"))
                 meta_bits = [source.source_type.replace("_", " ").title()]
                 duration = _format_duration(source.duration_seconds)
                 if duration:
@@ -820,15 +739,46 @@ def render_sidebar(session_id: str) -> None:
                             st.caption(f"{chunk_count} chunk{plural} ready for indexing")
 
 
+def _resolve_playable_media(db, source) -> str | None:
+    """New: returns something st.video() can play for this source, or
+    None if nothing playable is available. YouTube sources use the
+    original URL directly (no local re-serving, and it's the video's own
+    player); local uploads use the ORIGINAL_MEDIA artifact ingestion.py
+    keeps on disk permanently (confirmed by reading that module -- it's
+    never deleted after processing). Returns None rather than raising on
+    any missing data, since "no video preview" is a fine degraded state
+    for a feature that's purely additive."""
+    if source is None:
+        return None
+    if source.source_type == "YOUTUBE" and source.source_url:
+        return source.source_url
+    artifact = source_repository.get_latest_artifact(
+        db, source_id=source.id, artifact_type="ORIGINAL_MEDIA"
+    )
+    if artifact is not None and Path(artifact.storage_path).exists():
+        return artifact.storage_path
+    return None
+
+
 def _render_evidence(db, message_id: str) -> None:
     """Footnote-style citation rail: a numbered rank chip, source title +
-    a timecode chip, the quoted evidence text in a soft rounded block
-    underneath (closer to how NotebookLM shows a cited passage)."""
+    a timecode chip, the quoted evidence text in a soft rounded block,
+    and (new) a "Watch this moment" toggle that actually plays the source
+    from that exact second instead of just labeling it."""
     evidence_rows = conversation_repository.list_evidence_for_message(db, message_id)
     if not evidence_rows:
         return
     chunks_by_id = content_repository.get_chunks_by_ids(db, [e.chunk_id for e in evidence_rows])
     sources_by_id = source_repository.get_sources_by_ids(db, [e.source_id for e in evidence_rows])
+
+    # One lookup per unique source, not per evidence row -- several
+    # citations commonly point at the same source.
+    media_by_source_id: dict[str, str] = {}
+    for source_id, source in sources_by_id.items():
+        media_ref = _resolve_playable_media(db, source)
+        if media_ref is not None:
+            media_by_source_id[source_id] = media_ref
+
     with st.expander(f"Sources cited ({len(evidence_rows)})"):
         for evidence in evidence_rows:
             chunk = chunks_by_id.get(evidence.chunk_id)
@@ -836,7 +786,8 @@ def _render_evidence(db, message_id: str) -> None:
             title = source.title if source and source.title else "Untitled source"
             # `is not None` (not `if evidence.start_time`) -- a real 0.0
             # start (the very first chunk of a source) must still show.
-            start = _format_duration(int(evidence.start_time)) if evidence.start_time is not None else None
+            has_start_time = evidence.start_time is not None
+            start = _format_duration(int(evidence.start_time)) if has_start_time else None
             timecode_html = f'<span class="edu-timecode">{html.escape(start)}</span>' if start else ""
             text = chunk.text if chunk is not None else ""
             st.markdown(
@@ -851,14 +802,30 @@ def _render_evidence(db, message_id: str) -> None:
                 unsafe_allow_html=True,
             )
 
+            media_ref = media_by_source_id.get(evidence.source_id)
+            if media_ref is not None and has_start_time:
+                toggle_key = f"edu_show_video_{evidence.id}"
+                if st.button("▶ Watch this moment", key=f"edu_watch_btn_{evidence.id}"):
+                    st.session_state[toggle_key] = not st.session_state.get(toggle_key, False)
+                if st.session_state.get(toggle_key):
+                    try:
+                        st.video(media_ref, start_time=int(evidence.start_time))
+                    except Exception as exc:
+                        # Purely additive feature -- a bad embed (an
+                        # unsupported URL shape, a missing codec, a
+                        # Streamlit-version quirk this sandbox can't test)
+                        # degrades to a quiet note, never breaks the rest
+                        # of the evidence panel.
+                        st.caption(f"Couldn't load the video preview here: {exc}")
+
 
 def _meter_html(label: str, value_0_to_1: float, *, threshold: float | None = None) -> str:
     """Only used for scores that are genuinely 0-1-bounded (HHEM's NLI
-    score) -- see module docstring for why retrieval/rerank scores do NOT
-    get this treatment. threshold, when given, draws a small tick mark at
-    that fraction of the track (the real 0.5 supported/not-supported
-    decision boundary grounding.py uses), so the meter shows the actual
-    number the app checked against, not just a bare fill."""
+    score) -- retrieval/rerank scores are NOT 0-1-bounded (confirmed
+    against retrieval.py/reranking.py), so they stay plain chips instead
+    of a fabricated percentage bar. threshold, when given, draws a small
+    tick mark at that fraction of the track (the real 0.5 supported/not-
+    supported decision boundary grounding.py uses)."""
     pct = max(0.0, min(1.0, value_0_to_1)) * 100
     threshold_html = ""
     if threshold is not None:
@@ -894,7 +861,7 @@ def _render_retrieval_details(db, message) -> None:
         if latency_label:
             st.markdown(
                 f'<div class="edu-detail-latency">Answered in '
-                f'<span class="edu-mono">{html.escape(latency_label)}</span></div>',
+                f'<span class="edu-accentnum">{html.escape(latency_label)}</span></div>',
                 unsafe_allow_html=True,
             )
 
