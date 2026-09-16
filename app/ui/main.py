@@ -9,39 +9,64 @@ workspace and evidence rendering still land in later sprints — this file
 keeps growing into `AppShell` incrementally rather than being scaffolded
 as dead UI upfront (Doc 3 sec 40).
 
-Sprint 11 (UI polish, explicitly the last priority per his own ordering —
-accuracy/grounding came first): this file's actual logic (DB access,
-ingestion calls, the answering pipeline, the background-thread status
-polling) is UNCHANGED from Sprint 1-10. Everything below is presentation
-only:
-  - Sources moved into a persistent sidebar (render_sidebar) instead of
-    sitting in the main scroll above the Q&A -- the UI/UX spec's own
-    source -> question -> answer -> evidence hierarchy (Doc 3) reads
-    better as "sources live on the side, the workspace is the answer,"
-    not "scroll past your library every time."
-  - st.chat_message bubbles are gone. The spec's own non-goals list (Doc
-    3 sec listing "not a ChatGPT clone") already ruled out a generic
-    chat-bubble look; this renders each turn as an editorial Q&A block
-    instead (question as a heading, answer as prose, citations as small
-    superscripts) via hand-written HTML/CSS through st.markdown(...,
-    unsafe_allow_html=True) -- content Claude fully controls, not a
-    dependency on Streamlit's internal (version-fragile) widget classes.
-  - Grounding status is a small custom pill badge instead of Streamlit's
-    default st.success/st.warning/st.info/st.error boxes, which read as
-    generic dev-tool alerts, not an "editorial, premium" product surface.
-  - New: a per-answer "Retrieval & grounding details" panel exposing
-    latency, per-passage retrieval/rerank/NLI scores, and per-claim
-    verdicts -- the actual technical work (contextual retrieval, hybrid
-    rerank, claim-level NLI verification) made visible instead of living
-    only in the DB.
+Sprint 11 (UI polish): sources moved into a persistent sidebar, chat
+bubbles replaced with an editorial Q&A layout, custom pill badges,
+Fraunces/Inter typography, a per-answer "Retrieval & grounding details"
+panel.
+
+Post-Sprint-11 visual redesign (his explicit feedback: the UI "felt like
+a normal RAG-over-docs tool" and needed to look nothing like one): a full
+presentation-layer pass, still zero changes to DB access, ingestion,
+retrieval, generation, or grounding logic below. What changed and why:
+
+  - A real visual identity instead of a generic light theme: a warm
+    "paper" background, a forest-green/amber/terracotta status language
+    (not default red/yellow/green alert colors), and a third typeface —
+    JetBrains Mono — used ONLY for technical/numeric content (timestamps,
+    scores, durations). Serif headings + sans body + mono numbers is a
+    deliberate signal: "prose is generated, numbers are measured" — which
+    is the actual, true story of how this app works, and nothing a
+    generic ChatGPT-wrapper RAG demo bothers to visually distinguish.
+  - A real brand mark (inline SVG: a play-triangle inside a ring — "video,
+    verified") used in the header, the empty state, and nowhere else —
+    consistent, not decorative noise.
+  - A real empty state (a 3-step "how this works" strip) replacing a bare
+    st.info() line — the first thing a visitor with no sources yet sees
+    is currently the least distinctive part of the old UI.
+  - Status/grounding badges gained an icon glyph (✓ / ◐ / ✕ / – / ?)
+    instead of color alone — color-only status communication is both a
+    generic-dashboard tell and a real (if minor) accessibility gap.
+  - Source cards in the sidebar gained a colored top accent keyed to
+    status, and the progress bar is now hand-built (a div with a
+    percentage width, not st.progress()) so its exact look is controlled
+    rather than inherited from Streamlit's internal (version-fragile)
+    widget markup.
+  - Evidence citations render as a real footnote rail: a circular rank
+    chip, a monospace timecode chip, and the quoted passage in an actual
+    blockquote treatment with a left accent bar — instead of a flat
+    "meta line + text line" list.
+  - The retrieval/grounding diagnostics panel no longer prints raw
+    "retrieval 0.031 · rerank 4.207 · NLI 0.812" number soup. NLI score is
+    genuinely a 0-1 probability-like value (grounding.py's HHEM output),
+    so it gets an honest horizontal meter with a marker at the real 0.5
+    decision threshold. Retrieval (RRF-fused, see retrieval.py) and rerank
+    (cross-encoder logit, unbounded, see reranking.py) scores are NOT
+    0-1-bounded — rendering them as percentage-fill bars would fabricate
+    false precision and could visually mis-rank candidates (e.g. a
+    reasonable RRF score like 0.03 would draw as a nearly-empty bar).
+    Those two stay clean monospace numeric chips instead: a real style
+    upgrade over the old plain text without inventing a scale that isn't
+    there.
+  - Citation markers in answer prose render as small filled chips (still
+    "[1]"-shaped, still exactly what's stored) rather than plain colored
+    bracket text.
+
 Global color/font baseline lives in .streamlit/config.toml (safe, stable,
-officially documented keys). Anything more specific than that base theme
-(the Fraunces/Inter font pairing, badge colors, the editorial Q&A layout)
-is done via a single injected <style> block below rather than by
-overriding Streamlit's internal widget CSS classes -- those change across
-versions and can't be verified against the exact version installed on
-his machine from here, so this only ever styles Claude's own hand-written
-HTML, never Streamlit's.
+officially documented keys) and was re-tuned to match this palette.
+Everything more specific is one injected <style> block below, styling
+only Claude's own hand-written HTML classes — never Streamlit's internal
+widget classes, which change across versions and can't be verified
+against the exact version installed on his machine from this sandbox.
 """
 
 import html
@@ -100,7 +125,7 @@ _STRUCTURED_STATUSES = {"INDEXING", "READY"}
 # whether to keep auto-refreshing the page.
 _ACTIVE_STATUSES = {"QUEUED", "DOWNLOADING", "EXTRACTING", "TRANSCRIBING", "PROCESSING", "INDEXING"}
 
-# Sprint 11: which status pill style each source status renders as.
+# Which status pill/accent variant each source status renders as.
 _STATUS_BADGE_VARIANT = {
     "READY": "grounded",
     "FAILED": "failed",
@@ -108,167 +133,467 @@ _STATUS_BADGE_VARIANT = {
 }
 
 # ---------------------------------------------------------------------------
-# Sprint 11: presentation-only styling. Nothing below touches app state.
+# Presentation-only styling + small building blocks. Nothing below this
+# banner (down to _ensure_schema) touches app state.
 # ---------------------------------------------------------------------------
 
 _CUSTOM_CSS = """
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+    --edu-bg: #FBF9F3;
+    --edu-card: #FFFFFF;
+    --edu-ink: #1B1B16;
+    --edu-muted: #6E6B5C;
+    --edu-faint: #96927F;
+    --edu-line: #E9E3D4;
+    --edu-accent: #1F6F5C;
+    --edu-accent-dark: #164F41;
+    --edu-accent-soft: #E4EFEA;
+    --edu-amber: #B07A2E;
+    --edu-amber-soft: #F6EDDD;
+    --edu-terracotta: #A6432E;
+    --edu-terracotta-soft: #F6E7E2;
+    --edu-slate-soft: #EDEBE3;
+}
 
 html, body,
 [data-testid="stAppViewContainer"],
 [data-testid="stSidebar"] {
     font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--edu-bg) !important;
+}
+
+/* Subtle warm vignette instead of a flat fill -- reads as "paper", not
+   "default light theme #2". Fixed background so it doesn't scroll/tile. */
+[data-testid="stAppViewContainer"] > .main {
+    background-image: radial-gradient(circle at 15% 0%, rgba(31,111,92,0.05), transparent 45%),
+                       radial-gradient(circle at 100% 20%, rgba(176,122,46,0.045), transparent 40%);
+    background-attachment: fixed;
 }
 
 [data-testid="stAppViewContainer"] h1,
 [data-testid="stAppViewContainer"] h2,
 [data-testid="stAppViewContainer"] h3,
-.edu-app-title, .edu-qa-question, .edu-detail-subhead {
+.edu-app-title, .edu-qa-question, .edu-detail-subhead, .edu-empty-title {
     font-family: 'Fraunces', Georgia, serif !important;
 }
 
-hr { border-color: #E4E0D8 !important; }
+.edu-mono {
+    font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace !important;
+}
+
+hr { border-color: var(--edu-line) !important; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #DDD6C4; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: #CFC7B0; }
+
+/* -- brand mark -- */
+.edu-mark { color: var(--edu-accent); flex-shrink: 0; display: block; }
 
 /* -- app header (main pane) -- */
+.edu-hero {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    margin-bottom: 0.35rem;
+}
 .edu-app-title {
-    font-size: 2rem;
+    font-size: 1.9rem;
     font-weight: 600;
-    margin-bottom: 0.15rem;
-    color: #1F1F1F;
+    line-height: 1.1;
+    color: var(--edu-ink);
 }
 .edu-app-subtitle {
-    color: #6B6B63;
+    color: var(--edu-muted);
     font-size: 0.98rem;
-    margin-bottom: 1.1rem;
+    margin: 0.1rem 0 0.55rem 0;
+}
+.edu-hero-tags {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--edu-accent-dark);
+    padding-bottom: 1.0rem;
+    border-bottom: 1px solid var(--edu-line);
+    margin-bottom: 1.2rem;
+}
+.edu-hero-tags span.sep { color: var(--edu-faint); margin: 0 0.5rem; }
+
+/* -- empty state -- */
+.edu-empty {
+    text-align: center;
+    padding: 2.6rem 1rem 1.6rem 1rem;
+}
+.edu-empty .edu-mark { margin: 0 auto 0.9rem auto; color: var(--edu-accent); }
+.edu-empty-title {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: var(--edu-ink);
+    margin-bottom: 0.35rem;
+}
+.edu-empty-sub {
+    color: var(--edu-muted);
+    font-size: 0.95rem;
+    max-width: 30rem;
+    margin: 0 auto 1.8rem auto;
+}
+.edu-steps {
+    display: flex;
+    justify-content: center;
+    gap: 0;
+    max-width: 34rem;
+    margin: 0 auto;
+}
+.edu-step {
+    flex: 1;
+    padding: 0 0.6rem;
+    position: relative;
+}
+.edu-step::after {
+    content: "";
+    position: absolute;
+    top: 0.85rem;
+    right: -0.1rem;
+    width: 0.9rem;
+    height: 1px;
+    background: var(--edu-line);
+}
+.edu-step:last-child::after { display: none; }
+.edu-step-num {
+    width: 1.7rem;
+    height: 1.7rem;
+    line-height: 1.7rem;
+    border-radius: 50%;
+    background: var(--edu-accent-soft);
+    color: var(--edu-accent-dark);
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+    font-size: 0.82rem;
+    margin: 0 auto 0.5rem auto;
+}
+.edu-step-label {
+    font-size: 0.82rem;
+    color: var(--edu-ink);
+    font-weight: 500;
+    line-height: 1.35;
 }
 
 /* -- sidebar -- */
 .edu-sidebar-title {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
     font-family: 'Fraunces', Georgia, serif;
-    font-size: 1.25rem;
+    font-size: 1.2rem;
     font-weight: 600;
+    color: var(--edu-ink);
     margin-bottom: 0.1rem;
 }
+.edu-sidebar-title .edu-mark { width: 18px; height: 18px; }
 .edu-sidebar-subtitle {
-    color: #6B6B63;
-    font-size: 0.85rem;
+    color: var(--edu-muted);
+    font-size: 0.83rem;
     margin-bottom: 0.9rem;
 }
+.edu-card-accent {
+    height: 3px;
+    border-radius: 3px;
+    margin: -0.15rem -0.1rem 0.65rem -0.1rem;
+}
+.edu-source-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    margin-bottom: 0.15rem;
+}
+.edu-source-glyph { color: var(--edu-faint); font-size: 0.75rem; }
 .edu-source-title {
     font-weight: 600;
-    font-size: 0.97rem;
-    margin-bottom: 0.1rem;
-    color: #1F1F1F;
+    font-size: 0.95rem;
+    color: var(--edu-ink);
 }
 .edu-source-meta {
-    color: #7A776E;
-    font-size: 0.8rem;
-    margin-bottom: 0.45rem;
+    color: var(--edu-faint);
+    font-size: 0.78rem;
+    margin-bottom: 0.5rem;
 }
 .edu-source-error {
-    color: #8C3B2E;
+    color: var(--edu-terracotta);
     font-size: 0.82rem;
-    background: #F7EDE9;
+    background: var(--edu-terracotta-soft);
     border-radius: 6px;
     padding: 0.4rem 0.6rem;
     margin-top: 0.3rem;
 }
 
-/* -- status / grounding pill badges -- */
+/* -- hand-built progress bar (not st.progress -- see module docstring) -- */
+.edu-progress-label {
+    font-size: 0.78rem;
+    color: var(--edu-muted);
+    margin-bottom: 0.3rem;
+    display: flex;
+    justify-content: space-between;
+}
+.edu-progress-label .edu-mono { color: var(--edu-accent-dark); font-weight: 600; }
+.edu-progress-track {
+    height: 6px;
+    border-radius: 4px;
+    background: var(--edu-slate-soft);
+    overflow: hidden;
+}
+.edu-progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--edu-accent), #2E8A73);
+    transition: width 0.6s ease;
+}
+
+/* -- status / grounding pill badges (icon + label) -- */
 .edu-badge {
-    display: inline-block;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.32rem;
     font-size: 0.74rem;
     font-weight: 500;
     letter-spacing: 0.01em;
-    padding: 0.2rem 0.6rem;
+    padding: 0.22rem 0.62rem;
     border-radius: 999px;
     line-height: 1.4;
 }
 .edu-badge--sm { font-size: 0.68rem; padding: 0.12rem 0.5rem; }
-.edu-badge--grounded    { background: #E9F0EC; color: #2F5D50; }
-.edu-badge--partial     { background: #F7EFDF; color: #8A6D3B; }
-.edu-badge--unverified  { background: #EFEDE9; color: #6B6B63; }
-.edu-badge--abstained   { background: #EFEDE9; color: #6B6B63; }
-.edu-badge--failed      { background: #F7EDE9; color: #8C3B2E; }
+.edu-badge-icn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.05em;
+    height: 1.05em;
+    border-radius: 50%;
+    font-size: 0.72em;
+    line-height: 1;
+    flex-shrink: 0;
+}
+.edu-badge--grounded    { background: var(--edu-accent-soft); color: var(--edu-accent-dark); }
+.edu-badge--grounded .edu-badge-icn    { background: var(--edu-accent-dark); color: #fff; }
+.edu-badge--partial     { background: var(--edu-amber-soft); color: var(--edu-amber); }
+.edu-badge--partial .edu-badge-icn     { background: var(--edu-amber); color: #fff; }
+.edu-badge--unverified  { background: var(--edu-slate-soft); color: var(--edu-muted); }
+.edu-badge--unverified .edu-badge-icn  { background: var(--edu-muted); color: #fff; }
+.edu-badge--abstained   { background: var(--edu-slate-soft); color: var(--edu-muted); }
+.edu-badge--abstained .edu-badge-icn   { background: var(--edu-muted); color: #fff; }
+.edu-badge--failed      { background: var(--edu-terracotta-soft); color: var(--edu-terracotta); }
+.edu-badge--failed .edu-badge-icn      { background: var(--edu-terracotta); color: #fff; }
 
 /* -- Q&A workspace -- */
 .edu-qa-block {
-    padding: 1.1rem 0 1.0rem 0;
-    border-bottom: 1px solid #ECE8DE;
+    padding: 1.3rem 0 1.15rem 0;
+    border-bottom: 1px solid var(--edu-line);
 }
 .edu-qa-block:last-child { border-bottom: none; }
 .edu-qa-question {
-    font-size: 1.15rem;
-    font-weight: 600;
-    color: #1F1F1F;
-    margin-bottom: 0.5rem;
+    font-size: 1.28rem;
+    font-style: italic;
+    font-weight: 500;
+    color: var(--edu-ink);
+    margin-bottom: 0.6rem;
+    line-height: 1.3;
 }
-.edu-qa-meta { margin-bottom: 0.55rem; }
+.edu-qa-meta { margin-bottom: 0.6rem; }
 .edu-qa-answer {
     font-size: 0.98rem;
-    line-height: 1.65;
-    color: #2B2B27;
+    line-height: 1.68;
+    color: #2B2B25;
 }
 .edu-qa-answer p { margin: 0 0 0.7rem 0; }
 .edu-qa-answer p:last-child { margin-bottom: 0; }
 .edu-citation {
-    color: #2F5D50;
+    display: inline-flex;
+    align-items: center;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.66rem;
     font-weight: 600;
-    margin-left: 1px;
+    background: var(--edu-accent-soft);
+    color: var(--edu-accent-dark);
+    padding: 0.03rem 0.32rem;
+    border-radius: 4px;
+    margin-left: 2px;
+    vertical-align: text-top;
 }
 
-/* -- evidence / footnotes -- */
+/* -- evidence / citation rail -- */
 .edu-evidence-item {
-    padding: 0.5rem 0;
-    border-bottom: 1px solid #F0EDE6;
+    display: flex;
+    gap: 0.6rem;
+    padding: 0.65rem 0;
+    border-bottom: 1px solid var(--edu-line);
 }
 .edu-evidence-item:last-child { border-bottom: none; }
-.edu-evidence-meta {
-    font-size: 0.78rem;
+.edu-rank-chip {
+    flex-shrink: 0;
+    width: 1.5rem;
+    height: 1.5rem;
+    line-height: 1.5rem;
+    text-align: center;
+    border-radius: 50%;
+    background: var(--edu-accent-soft);
+    color: var(--edu-accent-dark);
+    font-family: 'JetBrains Mono', monospace;
     font-weight: 600;
-    color: #7A776E;
-    margin-bottom: 0.15rem;
+    font-size: 0.72rem;
+}
+.edu-rank-chip--sm { width: 1.2rem; height: 1.2rem; line-height: 1.2rem; font-size: 0.64rem; }
+.edu-evidence-body { flex: 1; min-width: 0; }
+.edu-evidence-head {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+}
+.edu-evidence-source {
+    font-size: 0.83rem;
+    font-weight: 600;
+    color: var(--edu-ink);
+}
+.edu-timecode {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    color: var(--edu-accent-dark);
+    background: var(--edu-accent-soft);
+    padding: 0.05rem 0.4rem;
+    border-radius: 4px;
 }
 .edu-evidence-text {
-    font-size: 0.9rem;
-    color: #45443E;
-    line-height: 1.5;
+    font-size: 0.89rem;
+    color: #45443A;
+    line-height: 1.55;
+    margin: 0;
+    padding-left: 0.65rem;
+    border-left: 2px solid var(--edu-line);
 }
 
 /* -- retrieval/grounding diagnostics -- */
 .edu-detail-latency {
     font-size: 0.82rem;
-    color: #6B6B63;
-    margin-bottom: 0.6rem;
+    color: var(--edu-muted);
+    margin-bottom: 0.7rem;
 }
+.edu-detail-latency .edu-mono { color: var(--edu-accent-dark); font-weight: 600; }
 .edu-detail-subhead {
     font-size: 0.85rem;
     font-weight: 600;
-    color: #45443E;
-    margin: 0.7rem 0 0.35rem 0;
+    color: #45443A;
+    margin: 0.8rem 0 0.4rem 0;
 }
-.edu-detail-row {
-    font-size: 0.82rem;
-    color: #45443E;
-    padding: 0.15rem 0;
+.edu-score-row {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.2rem 0;
+    font-size: 0.78rem;
+    color: var(--edu-muted);
+}
+.edu-score-chip {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.74rem;
+    color: #45443A;
+    background: var(--edu-slate-soft);
+    padding: 0.06rem 0.4rem;
+    border-radius: 4px;
+}
+.edu-meter-wrap { display: flex; align-items: center; gap: 0.35rem; }
+.edu-meter-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.68rem;
+    color: var(--edu-faint);
+    width: 1.3em;
+}
+.edu-meter-track {
+    position: relative;
+    width: 5.5rem;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--edu-slate-soft);
+    overflow: visible;
+}
+.edu-meter-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    height: 100%;
+    border-radius: 3px;
+    background: var(--edu-accent);
+}
+.edu-meter-threshold {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 1px;
+    background: var(--edu-faint);
+    left: 50%;
 }
 .edu-detail-claim {
-    padding: 0.4rem 0;
-    border-bottom: 1px solid #F0EDE6;
+    padding: 0.45rem 0;
+    border-bottom: 1px solid var(--edu-line);
 }
 .edu-detail-claim:last-child { border-bottom: none; }
 .edu-detail-claim-text {
     font-size: 0.85rem;
-    color: #2B2B27;
+    color: #2B2B25;
 }
 .edu-detail-claim-meta {
-    font-size: 0.75rem;
-    color: #8C8A80;
-    margin-top: 0.1rem;
+    font-size: 0.74rem;
+    color: var(--edu-faint);
+    margin-top: 0.15rem;
+}
+
+/* -- gentle hover-lift on cards (Streamlit's own bordered container) -- */
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+}
+[data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"]:hover {
+    box-shadow: 0 4px 16px -8px rgba(27,27,22,0.18);
 }
 </style>
 """
+
+# Brand mark: a play-triangle inside a ring -- "video content, verified."
+# Reused (never redrawn differently) in the header, sidebar title, and
+# empty state, so it reads as one consistent identity rather than
+# decoration. currentColor means its color is set entirely by the
+# surrounding element's CSS `color`, per the .edu-mark rule above.
+def _mark_svg(size: int = 30) -> str:
+    return (
+        f'<svg width="{size}" height="{size}" viewBox="0 0 32 32" fill="none" '
+        f'xmlns="http://www.w3.org/2000/svg" class="edu-mark">'
+        f'<circle cx="16" cy="16" r="14" stroke="currentColor" stroke-width="1.6"/>'
+        f'<path d="M13 11.2 L22 16 L13 20.8 Z" fill="currentColor"/>'
+        f"</svg>"
+    )
+
+
+# One glyph per badge variant -- paired with color, not a replacement for
+# it, since color-alone status communication doesn't hold up for anyone
+# with color-vision deficiency and also just reads as a generic dashboard.
+_BADGE_ICON = {
+    "grounded": "✓",     # check
+    "partial": "◐",      # half-filled circle
+    "unverified": "?",
+    "abstained": "–",    # en dash
+    "failed": "✕",       # multiplication x
+}
+
+# Status -> accent color for the sidebar source card's top strip.
+_STATUS_ACCENT_COLOR = {
+    "grounded": "var(--edu-accent)",
+    "partial": "var(--edu-amber)",
+    "unverified": "var(--edu-faint)",
+    "failed": "var(--edu-terracotta)",
+}
 
 
 def _inject_custom_css() -> None:
@@ -277,7 +602,12 @@ def _inject_custom_css() -> None:
 
 def _badge_html(label: str, variant: str, *, small: bool = False) -> str:
     size_class = " edu-badge--sm" if small else ""
-    return f'<span class="edu-badge edu-badge--{variant}{size_class}">{html.escape(label)}</span>'
+    icon = _BADGE_ICON.get(variant, "")
+    icon_html = f'<span class="edu-badge-icn">{icon}</span>' if icon else ""
+    return (
+        f'<span class="edu-badge edu-badge--{variant}{size_class}">'
+        f"{icon_html}{html.escape(label)}</span>"
+    )
 
 
 # Citation markers in a generated answer are always "[n]" or "[n, m]" —
@@ -324,12 +654,10 @@ def _bootstrap_session_id() -> str:
 
 
 def _format_duration(seconds: int | None) -> str:
-    # Self-audit finding: `if not seconds` treats a genuinely meaningful
-    # 0 (the very start of a source -- a completely normal start_time for
-    # a citation's first chunk, especially once VAD trims leading silence
-    # to exactly 0.0) the same as None/unknown, silently dropping the
-    # timestamp from that citation. `is None` is the actual "unknown"
-    # check; 0 is a real, displayable value ("0:00"), not "no timestamp."
+    # `is None` (not `if not seconds`) -- a genuinely meaningful 0 (the
+    # very start of a source, a completely normal start_time for a
+    # citation's first chunk once VAD trims leading silence to exactly
+    # 0.0) must not be treated the same as "unknown".
     if seconds is None:
         return ""
     h, rem = divmod(seconds, 3600)
@@ -346,21 +674,53 @@ def _format_latency(latency_ms: int | None) -> str:
 
 
 def render_header() -> None:
-    st.markdown('<div class="edu-app-title">EduRAG</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="edu-app-subtitle">Learn from your material. Ask anything. Verify the answer.</div>',
+        f'<div class="edu-hero">{_mark_svg(30)}'
+        f'<div><div class="edu-app-title">EduRAG</div>'
+        f'<div class="edu-app-subtitle">Learn from your material. Ask anything. Verify the answer.</div>'
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        '<div class="edu-hero-tags">TRANSCRIPT-GROUNDED'
+        '<span class="sep">&middot;</span>TIMESTAMPED CITATIONS'
+        '<span class="sep">&middot;</span>CLAIM-LEVEL VERIFIED</div>',
+        unsafe_allow_html=True,
+    )
+
+
+def _render_empty_state() -> None:
+    """Replaces a bare st.info() line. The first thing a visitor with no
+    sources yet sees was, until now, the least distinctive part of the
+    whole app -- this makes the actual pipeline (add -> verify -> ask)
+    visible up front instead of a generic placeholder message."""
+    st.markdown(
+        f'<div class="edu-empty">{_mark_svg(42)}'
+        '<div class="edu-empty-title">Add a lecture to begin</div>'
+        '<div class="edu-empty-sub">Drop in a YouTube lecture or a local video from the sidebar. '
+        "EduRAG transcribes it, checks every answer against what's actually said, "
+        "and cites the exact moment it came from.</div>"
+        '<div class="edu-steps">'
+        '<div class="edu-step"><div class="edu-step-num">1</div>'
+        '<div class="edu-step-label">Add a YouTube link or upload a video</div></div>'
+        '<div class="edu-step"><div class="edu-step-num">2</div>'
+        '<div class="edu-step-label">We transcribe, chunk & index it</div></div>'
+        '<div class="edu-step"><div class="edu-step-num">3</div>'
+        '<div class="edu-step-label">Ask — get cited, verified answers</div></div>'
+        "</div></div>",
         unsafe_allow_html=True,
     )
 
 
 def render_sidebar(session_id: str) -> None:
-    """Sprint 11: source management moved here (was the top half of the
-    main pane) so the main pane can be a pure Q&A workspace. Logic is
-    identical to the old render_add_source/render_source_list — only
-    where it renders, and how each source's status/metadata looks,
-    changed."""
+    """Source management lives here so the main pane can be a pure Q&A
+    workspace. Logic is unchanged from earlier sprints — only how each
+    source's status/metadata looks changed."""
     with st.sidebar:
-        st.markdown('<div class="edu-sidebar-title">Your sources</div>', unsafe_allow_html=True)
+        st.markdown(
+            f'<div class="edu-sidebar-title">{_mark_svg(18)}Your sources</div>',
+            unsafe_allow_html=True,
+        )
         st.markdown(
             '<div class="edu-sidebar-subtitle">Add a YouTube lecture or a local video to begin.</div>',
             unsafe_allow_html=True,
@@ -413,6 +773,16 @@ def render_sidebar(session_id: str) -> None:
         st.divider()
         for source in current_sources:
             with st.container(border=True):
+                status_label = STATUS_LABELS.get(source.status, source.status)
+                variant = _STATUS_BADGE_VARIANT.get(
+                    source.status, "partial" if source.status in _ACTIVE_STATUSES else "unverified"
+                )
+                accent_color = _STATUS_ACCENT_COLOR.get(variant, "var(--edu-faint)")
+                st.markdown(
+                    f'<div class="edu-card-accent" style="background:{accent_color}"></div>',
+                    unsafe_allow_html=True,
+                )
+
                 title = source.title or source.original_name or source.source_url or "Untitled source"
                 meta_bits = [source.source_type.replace("_", " ").title()]
                 duration = _format_duration(source.duration_seconds)
@@ -420,13 +790,16 @@ def render_sidebar(session_id: str) -> None:
                     meta_bits.append(duration)
                 if source.language:
                     meta_bits.append(f"Language: {source.language.upper()}")
-                st.markdown(f'<div class="edu-source-title">{html.escape(title)}</div>', unsafe_allow_html=True)
                 st.markdown(
-                    f'<div class="edu-source-meta">{html.escape(" · ".join(meta_bits))}</div>',
+                    f'<div class="edu-source-row"><span class="edu-source-glyph">&#9656;</span>'
+                    f'<span class="edu-source-title">{html.escape(title)}</span></div>',
+                    unsafe_allow_html=True,
+                )
+                st.markdown(
+                    f'<div class="edu-source-meta edu-mono">{html.escape(" &middot; ".join(meta_bits))}</div>',
                     unsafe_allow_html=True,
                 )
 
-                status_label = STATUS_LABELS.get(source.status, source.status)
                 if source.status == "FAILED":
                     st.markdown(_badge_html(status_label, "failed"), unsafe_allow_html=True)
                     st.markdown(
@@ -444,14 +817,21 @@ def render_sidebar(session_id: str) -> None:
                 elif source.status in _ACTIVE_STATUSES:
                     # Sprint 7: this source is being worked on right now by
                     # a background pipeline thread — show real per-stage
-                    # progress (already tracked in ProcessingJob) instead
-                    # of a static "processing" label with no sense of
-                    # movement.
+                    # progress (already tracked in ProcessingJob). Hand-
+                    # built bar (not st.progress()) so its exact look is
+                    # ours, not Streamlit's internal widget markup — see
+                    # module docstring.
                     with SessionLocal() as db:
                         job = processing_job_repository.latest_job_for_source(db, source.id)
-                    stage_label = STATUS_LABELS.get(source.status, source.status)
-                    progress = job.progress if job else 0.0
-                    st.progress(min(max(progress, 0.0), 1.0), text=stage_label)
+                    progress = min(max(job.progress if job else 0.0, 0.0), 1.0)
+                    pct = progress * 100
+                    st.markdown(
+                        f'<div class="edu-progress-label"><span>{html.escape(status_label)}</span>'
+                        f'<span class="edu-mono">{pct:.0f}%</span></div>'
+                        f'<div class="edu-progress-track">'
+                        f'<div class="edu-progress-fill" style="width:{pct:.1f}%"></div></div>',
+                        unsafe_allow_html=True,
+                    )
                 else:
                     st.markdown(_badge_html(status_label, "unverified"), unsafe_allow_html=True)
 
@@ -491,11 +871,9 @@ def render_sidebar(session_id: str) -> None:
 
 
 def _render_evidence(db, message_id: str) -> None:
-    """Footnote-style citation list: numbered, source title + timestamp,
-    the raw evidence text underneath. Same data as before (Sprint 6);
-    only the rendering changed -- plain st.write/st.caption calls became
-    hand-built HTML so this reads like a document's footnotes instead of
-    a generic expander dump."""
+    """Footnote-style citation rail: a numbered rank chip, source title +
+    a monospace timecode chip, the quoted evidence text in a real
+    blockquote treatment underneath."""
     evidence_rows = conversation_repository.list_evidence_for_message(db, message_id)
     if not evidence_rows:
         return
@@ -506,31 +884,51 @@ def _render_evidence(db, message_id: str) -> None:
             chunk = chunks_by_id.get(evidence.chunk_id)
             source = sources_by_id.get(evidence.source_id)
             title = source.title if source and source.title else "Untitled source"
-            meta_bits = [f"[{evidence.rank}] {title}"]
-            # Self-audit finding: `if evidence.start_time` drops a real
-            # 0.0 start (the very first chunk of a source) the same way
-            # as a missing one. `is not None` is the correct check here.
+            # `is not None` (not `if evidence.start_time`) -- a real 0.0
+            # start (the very first chunk of a source) must still show.
             start = _format_duration(int(evidence.start_time)) if evidence.start_time is not None else None
-            if start:
-                meta_bits.append(f"at {start}")
+            timecode_html = f'<span class="edu-timecode">{html.escape(start)}</span>' if start else ""
             text = chunk.text if chunk is not None else ""
             st.markdown(
                 f'<div class="edu-evidence-item">'
-                f'<div class="edu-evidence-meta">{html.escape(" · ".join(meta_bits))}</div>'
-                f'<div class="edu-evidence-text">{html.escape(text)}</div>'
-                f"</div>",
+                f'<div class="edu-rank-chip">{evidence.rank}</div>'
+                f'<div class="edu-evidence-body">'
+                f'<div class="edu-evidence-head">'
+                f'<span class="edu-evidence-source">{html.escape(title)}</span>{timecode_html}'
+                f"</div>"
+                f'<blockquote class="edu-evidence-text">{html.escape(text)}</blockquote>'
+                f"</div></div>",
                 unsafe_allow_html=True,
             )
 
 
+def _meter_html(label: str, value_0_to_1: float, *, threshold: float | None = None) -> str:
+    """Only used for scores that are genuinely 0-1-bounded (HHEM's NLI
+    score) -- see module docstring for why retrieval/rerank scores do NOT
+    get this treatment. threshold, when given, draws a small tick mark at
+    that fraction of the track (the real 0.5 supported/not-supported
+    decision boundary grounding.py uses), so the meter shows the actual
+    number the app checked against, not just a bare fill."""
+    pct = max(0.0, min(1.0, value_0_to_1)) * 100
+    threshold_html = ""
+    if threshold is not None:
+        t_pct = max(0.0, min(1.0, threshold)) * 100
+        threshold_html = f'<span class="edu-meter-threshold" style="left:{t_pct:.0f}%"></span>'
+    return (
+        f'<span class="edu-meter-wrap"><span class="edu-meter-label">{html.escape(label)}</span>'
+        f'<span class="edu-meter-track"><span class="edu-meter-fill" style="width:{pct:.0f}%"></span>'
+        f"{threshold_html}</span></span>"
+    )
+
+
 def _render_retrieval_details(db, message) -> None:
-    """Sprint 11 addition: the actual retrieval/rerank/grounding work
-    (contextual retrieval, hybrid search + RRF fusion + cross-encoder
-    rerank, per-claim NLI verification) has existed since Sprint 5-6 but
-    was never visible anywhere except the DB. This surfaces it per
-    answer, collapsed by default -- diagnostic, not required reading for
-    a learner just trying to study, but real proof of the pipeline
-    working rather than a claimed capability."""
+    """The actual retrieval/rerank/grounding work (contextual retrieval,
+    hybrid search + RRF fusion + cross-encoder rerank, per-claim NLI
+    verification) has existed since Sprint 5-6 but was never visible
+    anywhere except the DB. Surfaced per answer, collapsed by default —
+    diagnostic, not required reading for a learner just trying to study,
+    but real proof of the pipeline working rather than a claimed
+    capability."""
     evidence_rows = conversation_repository.list_evidence_for_message(db, message.id)
     verification_results = conversation_repository.list_verification_results_for_message(db, message.id)
     if not evidence_rows and not verification_results:
@@ -544,21 +942,24 @@ def _render_retrieval_details(db, message) -> None:
     with st.expander("Retrieval & grounding details"):
         latency_label = _format_latency(message.latency_ms)
         if latency_label:
-            st.markdown(f'<div class="edu-detail-latency">Answered in {latency_label}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="edu-detail-latency">Answered in '
+                f'<span class="edu-mono">{html.escape(latency_label)}</span></div>',
+                unsafe_allow_html=True,
+            )
 
         if evidence_rows:
             st.markdown('<div class="edu-detail-subhead">Retrieved passages</div>', unsafe_allow_html=True)
             for evidence in evidence_rows:
-                bits = [f"#{evidence.rank}"]
+                bits = [f'<div class="edu-rank-chip edu-rank-chip--sm">{evidence.rank}</div>']
                 if evidence.retrieval_score is not None:
-                    bits.append(f"retrieval {evidence.retrieval_score:.3f}")
+                    bits.append(f'<span class="edu-score-chip">retrieval {evidence.retrieval_score:.3f}</span>')
                 if evidence.reranker_score is not None:
-                    bits.append(f"rerank {evidence.reranker_score:.3f}")
+                    bits.append(f'<span class="edu-score-chip">rerank {evidence.reranker_score:.3f}</span>')
                 if evidence.nli_score is not None:
-                    bits.append(f"NLI {evidence.nli_score:.3f}")
+                    bits.append(_meter_html("NLI", evidence.nli_score, threshold=0.5))
                 st.markdown(
-                    f'<div class="edu-detail-row">{html.escape(" · ".join(bits))}</div>',
-                    unsafe_allow_html=True,
+                    f'<div class="edu-score-row">{"".join(bits)}</div>', unsafe_allow_html=True,
                 )
 
         if verification_results:
@@ -575,7 +976,7 @@ def _render_retrieval_details(db, message) -> None:
                     f'<div class="edu-detail-claim">'
                     f'{_badge_html(verdict_label, verdict_variant, small=True)} '
                     f'<span class="edu-detail-claim-text">{html.escape(claim_text)}</span>'
-                    f'<div class="edu-detail-claim-meta">{html.escape(" · ".join(meta_bits))}</div>'
+                    f'<div class="edu-detail-claim-meta edu-mono">{html.escape(" &middot; ".join(meta_bits))}</div>'
                     f"</div>",
                     unsafe_allow_html=True,
                 )
@@ -620,10 +1021,9 @@ def render_ask(session_id: str) -> None:
     turn), since messages/evidence are now actually persisted rather than
     being a single-shot preview.
 
-    Sprint 11: no longer st.chat_message bubbles -- each USER/ASSISTANT
-    message pair renders as one editorial block via _render_turn. The
-    retrieval/generation/verification logic this reads from is completely
-    unchanged from Sprint 6-10."""
+    Each USER/ASSISTANT message pair renders as one editorial block via
+    _render_turn. The retrieval/generation/verification logic this reads
+    from is completely unchanged from Sprint 6-10."""
     with SessionLocal() as db:
         sources_for_session = source_repository.list_sources_for_session(db, session_id)
     has_ready_source = any(s.status == "READY" for s in sources_for_session)
@@ -632,7 +1032,7 @@ def render_ask(session_id: str) -> None:
         if sources_for_session:
             st.info("Your source is still processing — check the sidebar for progress.")
         else:
-            st.info("Add a source in the sidebar to start asking questions.")
+            _render_empty_state()
         return
 
     st.caption("Answers are generated only from your sources, with every claim checked against the evidence.")

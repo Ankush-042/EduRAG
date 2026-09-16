@@ -1,16 +1,18 @@
 # Light mode only — non-negotiable per UI/UX spec Doc 3 sec 2.1 / 26.
 #
-# Sprint 11: fixed "sans serif" (with a space) -> "sans-serif" -- the
-# hyphenated form is the one the docs actually specify; this is just a
-# safe global baseline, the real editorial typography (Fraunces
-# headings, Inter body) is applied by app/ui/main.py's own injected
-# <style> block, which doesn't depend on this file being exactly right.
+# Colors retuned for the post-Sprint-11 visual redesign (see app/ui/main.py's
+# module docstring) to match the same palette used by its injected <style>
+# block's CSS variables (--edu-accent, --edu-bg, --edu-ink) -- this file is
+# just the safe global baseline Streamlit itself uses for its own native
+# widgets (buttons, inputs, sliders) that the injected CSS doesn't touch, so
+# a text input's focus ring or a native button matches the rest of the page
+# instead of clashing with it.
 [theme]
 base = "light"
-primaryColor = "#2F5D50"
-backgroundColor = "#FDFCFA"
-secondaryBackgroundColor = "#F4F1EC"
-textColor = "#1F1F1F"
+primaryColor = "#1F6F5C"
+backgroundColor = "#FBF9F3"
+secondaryBackgroundColor = "#F3EFE2"
+textColor = "#1B1B16"
 font = "sans-serif"
 showSidebarBorder = false
 
