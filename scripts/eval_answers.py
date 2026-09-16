@@ -30,7 +30,21 @@ time as you add more real sources). Each case:
                        is reported but doesn't affect the overall
                        pass/fail exit code (for a documented, not-yet-
                        fixed gap rather than a silent skip)
-  }
+    "expect_source_title": optional substring -- the resolved session
+                       must have at least one READY source whose title
+                       contains this (case-insensitive), or the case
+                       fails immediately with a clear "source not in
+                       this session" error instead of running the real
+                       question against whatever happens to be indexed.
+
+Self-audit finding: without expect_source_title, resolving "whichever
+session was most recently active" (see _latest_session_id below) with no
+check that the CONTENT this case actually assumes is present means a case
+authored against one lecture can silently run against a completely
+different (or empty) session -- every content-specific expect_any/
+expect_none assertion then fails for the wrong reason (mismatched
+content, not a real regression), or worse, happens to pass by accident.
+expect_source_title makes that assumption explicit and checked up front.
 
 Run it with the project venv active, from the project root:
     python scripts\\eval_answers.py
@@ -77,8 +91,31 @@ def _latest_session_id(db) -> str | None:
     return session.id if session else None
 
 
-def _run_case(db, session_id: str, case: dict) -> dict:
+def _ready_source_titles(db, session_id: str) -> list[str]:
+    from app.db.repositories import source_repository
+
+    sources = source_repository.list_sources_for_session(db, session_id)
+    return [s.title for s in sources if s.status == "READY" and s.title]
+
+
+def _run_case(db, session_id: str, case: dict, ready_titles: list[str]) -> dict:
     from app.services.answering import AnsweringError, answer
+
+    expected_title = case.get("expect_source_title")
+    if expected_title and not any(expected_title.lower() in t.lower() for t in ready_titles):
+        return {
+            **case,
+            "passed": False,
+            "error": (
+                f"expected a READY source with title containing "
+                f"{expected_title!r}, but session {session_id} only has: "
+                f"{ready_titles or '(no READY sources)'} -- re-ingest the "
+                f"expected source, or point --session at the right one."
+            ),
+            "grounding_status": None,
+            "answer": None,
+            "latency_ms": 0,
+        }
 
     t0 = time.monotonic()
     try:
@@ -142,8 +179,10 @@ def main() -> int:
             print("No active session found — open the app and add at least one source first.")
             return 2
 
-        print(f"Evaluating {len(cases)} case(s) against session {session_id}\n")
-        results = [_run_case(db, session_id, case) for case in cases]
+        ready_titles = _ready_source_titles(db, session_id)
+        print(f"Evaluating {len(cases)} case(s) against session {session_id}")
+        print(f"READY sources in this session: {ready_titles or '(none)'}\n")
+        results = [_run_case(db, session_id, case, ready_titles) for case in cases]
 
     hard_failures = 0
     for r in results:

@@ -13,6 +13,8 @@ candidates it's scoring were produced.
 
 from __future__ import annotations
 
+import threading
+
 from app.core.config import get_settings
 from app.core.interfaces import RerankedCandidate, Reranker, RetrievedCandidate
 
@@ -22,19 +24,30 @@ settings = get_settings()
 # expensive to load, cheap to reuse within a process.
 _MODEL_CACHE: dict[str, object] = {}
 
+# Self-audit finding (post-Sprint-11): same unlocked check-then-set race
+# as embedding.py -- see that module's _MODEL_CACHE_LOCK comment for the
+# full reasoning (concurrent source pipelines / a query arriving mid-
+# ingestion could both load a duplicate CrossEncoder).
+_MODEL_CACHE_LOCK = threading.Lock()
+
 
 def _get_model(model_name: str):
     if model_name in _MODEL_CACHE:
         return _MODEL_CACHE[model_name]
 
-    from sentence_transformers import CrossEncoder
+    with _MODEL_CACHE_LOCK:
+        if model_name in _MODEL_CACHE:
+            return _MODEL_CACHE[model_name]
 
-    # device explicitly pinned — same reasoning as embedding.py's
-    # _get_model: avoids PyTorch opening a second CUDA context alongside
-    # ctranslate2's in the same process (config.py's torch_model_device).
-    model = CrossEncoder(model_name, device=settings.torch_model_device)
-    _MODEL_CACHE[model_name] = model
-    return model
+        from sentence_transformers import CrossEncoder
+
+        # device explicitly pinned — same reasoning as embedding.py's
+        # _get_model: avoids PyTorch opening a second CUDA context
+        # alongside ctranslate2's in the same process (config.py's
+        # torch_model_device).
+        model = CrossEncoder(model_name, device=settings.torch_model_device)
+        _MODEL_CACHE[model_name] = model
+        return model
 
 
 class CrossEncoderReranker(Reranker):

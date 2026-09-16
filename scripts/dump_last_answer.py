@@ -7,8 +7,10 @@ most recent conversation's assistant message(s):
   - every retrieved evidence chunk (in rank order) -- this is exactly
     what the "Evidence (N)" expander in the UI shows
   - every extracted claim, and what it was checked against: which
-    evidence chunk scored best, what verdict (ENTAILMENT / NEUTRAL /
-    CONTRADICTION) and score it got
+    evidence chunk scored best, what verdict (ENTAILMENT / NOT_SUPPORTED
+    -- HHEM-2.1's own two-way output; see grounding.py's docstring for
+    why the older 3-way NEUTRAL/CONTRADICTION labels from the
+    since-replaced NLI model no longer apply) and score it got
 
 This exists to see the actual retrieved text and verdicts directly,
 rather than guessing why grounding_status came back UNVERIFIED.

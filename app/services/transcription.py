@@ -38,6 +38,7 @@ import json
 import os
 import re
 import sys
+import threading
 import unicodedata
 from pathlib import Path
 
@@ -59,6 +60,20 @@ settings = get_settings()
 # WhisperTranscriber.transcribe below; the batched pipeline (Sprint 7) is
 # only ever non-None on a successful GPU load.
 _MODEL_CACHE: dict[str, tuple[object, str, object | None]] = {}
+
+# Self-audit finding (post-Sprint-11): the check-then-set in _get_model
+# below had no lock -- ingestion.py spawns one background pipeline thread
+# per source, so two sources added close together could both see a given
+# size not yet cached and both attempt the GPU probe/load concurrently.
+# Unlike a typical cache lock, this one is deliberately held for the
+# WHOLE first load (not just the check-and-set) -- that's the actual fix
+# here: only one thread should ever be doing the GPU probe for a given
+# model size at a time, so a second, redundant CUDA context never gets
+# opened purely from ingestion timing. Doesn't touch the separate
+# inference-time GPU->CPU fallback further down (WhisperTranscriber.
+# transcribe's own _MODEL_CACHE write) -- that's a narrower, harder-to-
+# hit race not worth risking this already-hard-won fallback logic for.
+_MODEL_CACHE_LOCK = threading.Lock()
 
 
 # The full set of pip-installable NVIDIA CUDA-12 runtime packages
@@ -193,27 +208,35 @@ def _get_model(size: str) -> tuple[object, str, object | None]:
     if size in _MODEL_CACHE:
         return _MODEL_CACHE[size]
 
-    try:
-        import faster_whisper  # noqa: F401 — import check only
-    except ImportError as exc:
-        raise TranscriptionError(
-            "faster-whisper is not installed (pip install -r requirements.txt)."
-        ) from exc
+    with _MODEL_CACHE_LOCK:
+        # Re-check inside the lock: another thread may have already
+        # finished loading this exact size while this thread was
+        # waiting -- and if it's still loading, waiting HERE (rather
+        # than racing another concurrent GPU probe) is the whole point.
+        if size in _MODEL_CACHE:
+            return _MODEL_CACHE[size]
 
-    try:
-        gpu_model = _build_model(size, "cuda", "float16")
-        batched = _build_batched_pipeline(gpu_model)
-        result = (gpu_model, "cuda", batched)
-        print(
-            f"[EduRAG] ASR model '{size}' loaded on GPU (cuda/float16), "
-            f"batched={'on' if batched else 'off'}."
-        )
-    except Exception as exc:
-        print(f"[EduRAG] ASR model '{size}' could not load on GPU ({exc}); using CPU (int8).")
-        result = (_build_model(size, "cpu", "int8"), "cpu", None)
+        try:
+            import faster_whisper  # noqa: F401 — import check only
+        except ImportError as exc:
+            raise TranscriptionError(
+                "faster-whisper is not installed (pip install -r requirements.txt)."
+            ) from exc
 
-    _MODEL_CACHE[size] = result
-    return result
+        try:
+            gpu_model = _build_model(size, "cuda", "float16")
+            batched = _build_batched_pipeline(gpu_model)
+            result = (gpu_model, "cuda", batched)
+            print(
+                f"[EduRAG] ASR model '{size}' loaded on GPU (cuda/float16), "
+                f"batched={'on' if batched else 'off'}."
+            )
+        except Exception as exc:
+            print(f"[EduRAG] ASR model '{size}' could not load on GPU ({exc}); using CPU (int8).")
+            result = (_build_model(size, "cpu", "int8"), "cpu", None)
+
+        _MODEL_CACHE[size] = result
+        return result
 
 
 def get_active_device(size: str) -> str | None:
@@ -342,7 +365,9 @@ def transcribe_source(db: DbSession, source: Source, job: ProcessingJob) -> None
     device_used = get_active_device(_model_size(settings.asr_model)) or "unknown"
     print(f"[EduRAG] Source {source.id} transcribed using device={device_used}")
 
-    jobs.update_progress(db, job, progress=0.6, stage="NORMALIZING_TRANSCRIPT")
+    # Whole-pipeline percentage, not a private per-function scale -- see
+    # the matching comment in ingestion.py's _extract_audio.
+    jobs.update_progress(db, job, progress=0.55, stage="NORMALIZING_TRANSCRIPT")
 
     raw_payload = {
         "language": transcript.language,
@@ -406,7 +431,7 @@ def transcribe_source(db: DbSession, source: Source, job: ProcessingJob) -> None
     if not source.language:
         sources.set_source_metadata(db, source, language=transcript.language)
 
-    jobs.update_progress(db, job, progress=0.9, stage="AWAITING_CONTENT_STRUCTURING")
+    jobs.update_progress(db, job, progress=0.60, stage="AWAITING_CONTENT_STRUCTURING")
 
     # Hand off to Sprint 3 (content structuring: sections/chunks/sentences).
     sources.update_source_status(db, source, "PROCESSING")

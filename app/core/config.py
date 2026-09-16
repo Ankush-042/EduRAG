@@ -151,12 +151,43 @@ class Settings(BaseSettings):
     # away from without an eval-set reason (Sprint 11).
     rrf_k: int = 60
 
-    # --- Content structuring (Sprint 3) -----------------------------------
+    # --- Content structuring (Sprint 3, semantic chunking added post-Sprint-11) --
     # Target words per chunk -- sentences (ASR segments) are packed into a
     # chunk until adding the next one would exceed this, never splitting a
     # sentence across chunks. ~180 words is a common small-to-big sweet
     # spot; revisit if the eval set (Sprint 11) says otherwise.
     chunk_target_words: int = 180
+    #
+    # Self-audit finding (post-Sprint-11): structuring.py's own docstring
+    # flagged this from Sprint 3 -- "real topic-boundary detection isn't
+    # available yet ... that job naturally wants embeddings, which don't
+    # exist before this step runs" -- but by Sprint 4, embeddings DO exist
+    # (embedding.py), and by Sprint 8 there's an eval harness that can
+    # actually measure whether this helps. The variable-swap-memory-diagram
+    # eval case is a real, already-documented example of the cost of NOT
+    # doing this: a pure word-count packer has no reason to end a chunk
+    # where the topic actually shifts, so a chunk can straddle two
+    # unrelated ideas and dilute retrieval for both.
+    #
+    # enable_semantic_chunking turns this on: consecutive ASR segments are
+    # embedded (the same embedder already loaded for indexing -- no new
+    # model), and a chunk boundary is cut where the cosine similarity
+    # between adjacent segments drops below semantic_chunk_similarity_threshold
+    # -- a proxy for "the topic just changed" -- in addition to the
+    # existing target_words ceiling (which remains a hard cap either way,
+    # so a chunk can never grow unbounded even on a long run of high-
+    # similarity segments). chunk_min_words is a floor beneath which a
+    # similarity dip is ignored, so a couple of short, tangentially-phrased
+    # segments can't fragment a chunk down to near-nothing. A single kill
+    # switch back to the old pure-word-count behavior (both for a fully
+    # offline run with no torch model loaded successfully, and to isolate
+    # this as a variable when eval numbers move) -- same shape as
+    # enable_llm_contextualization above. Defaults are a reasoned starting
+    # point, not yet eval-tuned; scripts/eval_answers.py is exactly the
+    # tool to tune them with once real embeddings are available.
+    enable_semantic_chunking: bool = True
+    chunk_min_words: int = 40
+    semantic_chunk_similarity_threshold: float = 0.5
 
     # --- Session ----------------------------------------------------------
     session_ttl_hours: int = 6

@@ -324,7 +324,13 @@ def _bootstrap_session_id() -> str:
 
 
 def _format_duration(seconds: int | None) -> str:
-    if not seconds:
+    # Self-audit finding: `if not seconds` treats a genuinely meaningful
+    # 0 (the very start of a source -- a completely normal start_time for
+    # a citation's first chunk, especially once VAD trims leading silence
+    # to exactly 0.0) the same as None/unknown, silently dropping the
+    # timestamp from that citation. `is None` is the actual "unknown"
+    # check; 0 is a real, displayable value ("0:00"), not "no timestamp."
+    if seconds is None:
         return ""
     h, rem = divmod(seconds, 3600)
     m, s = divmod(rem, 60)
@@ -501,7 +507,10 @@ def _render_evidence(db, message_id: str) -> None:
             source = sources_by_id.get(evidence.source_id)
             title = source.title if source and source.title else "Untitled source"
             meta_bits = [f"[{evidence.rank}] {title}"]
-            start = _format_duration(int(evidence.start_time)) if evidence.start_time else None
+            # Self-audit finding: `if evidence.start_time` drops a real
+            # 0.0 start (the very first chunk of a source) the same way
+            # as a missing one. `is not None` is the correct check here.
+            start = _format_duration(int(evidence.start_time)) if evidence.start_time is not None else None
             if start:
                 meta_bits.append(f"at {start}")
             text = chunk.text if chunk is not None else ""

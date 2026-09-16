@@ -12,6 +12,8 @@ not what to do with them.
 
 from __future__ import annotations
 
+import threading
+
 from app.core.config import get_settings
 from app.core.interfaces import Embedder
 
@@ -21,6 +23,16 @@ settings = get_settings()
 # name so re-embedding within the same process reuses the same instance,
 # same reasoning as transcription.py's _MODEL_CACHE.
 _MODEL_CACHE: dict[str, object] = {}
+
+# Self-audit finding (post-Sprint-11): this cache's check-then-set had no
+# lock. embed_query() is called from retrieval.py on every question, and
+# embed_documents() from indexing.py's background pipeline threads
+# (ingestion.py spawns one thread per source) -- two sources' pipelines
+# reaching indexing around the same time, or a question arriving mid-
+# ingestion, could both see the model not yet cached and both construct
+# a duplicate SentenceTransformer. Same fix shape as indexing.py's
+# get_vector_store_client and grounding.py/reranking.py's model caches.
+_MODEL_CACHE_LOCK = threading.Lock()
 
 # BAAI/bge-* models were trained with an asymmetric convention: passages
 # are embedded as-is, but queries need a fixed instruction prefix prepended
@@ -39,17 +51,25 @@ def _get_model(model_name: str):
     if model_name in _MODEL_CACHE:
         return _MODEL_CACHE[model_name]
 
-    from sentence_transformers import SentenceTransformer
+    with _MODEL_CACHE_LOCK:
+        # Re-check inside the lock -- another thread may have already
+        # finished loading this exact model while this thread was
+        # waiting to acquire it.
+        if model_name in _MODEL_CACHE:
+            return _MODEL_CACHE[model_name]
 
-    # device explicitly pinned via settings.torch_model_device (config.py)
-    # — deliberately NOT left to auto-detect. sentence-transformers (via
-    # PyTorch) would otherwise open its own CUDA context in the same
-    # process transcription.py's ctranslate2 already has one open in,
-    # which is a known cause of a silent process crash on Windows. See
-    # config.py's torch_model_device comment for the full reasoning.
-    model = SentenceTransformer(model_name, device=settings.torch_model_device)
-    _MODEL_CACHE[model_name] = model
-    return model
+        from sentence_transformers import SentenceTransformer
+
+        # device explicitly pinned via settings.torch_model_device
+        # (config.py) — deliberately NOT left to auto-detect.
+        # sentence-transformers (via PyTorch) would otherwise open its
+        # own CUDA context in the same process transcription.py's
+        # ctranslate2 already has one open in, which is a known cause of
+        # a silent process crash on Windows. See config.py's
+        # torch_model_device comment for the full reasoning.
+        model = SentenceTransformer(model_name, device=settings.torch_model_device)
+        _MODEL_CACHE[model_name] = model
+        return model
 
 
 class SentenceTransformerEmbedder(Embedder):

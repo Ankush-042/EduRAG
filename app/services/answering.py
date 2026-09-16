@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 
 from sqlalchemy.orm import Session as DbSession
 
+from app.core.interfaces import EntailmentResult
 from app.db.models.content import CLAIM_TYPES
 from app.db.repositories import content_repository as content
 from app.db.repositories import conversation_repository as conversations
@@ -102,6 +103,30 @@ class AnsweringError(Exception):
     """Raised when a turn can't be produced at all (retrieval or
     generation itself failed) -- distinct from an ABSTAINED answer, which
     is a legitimate, successfully-produced result, not a failure."""
+
+
+# Self-audit finding (post-Sprint-11): unlike retrieve()/generator.generate()
+# above, verifier.verify() had NO exception handling anywhere in this file
+# -- a genuinely likely failure point (it's the first real run of HHEM-2.1
+# in this exact process; grounding.py's own docstring already flags the
+# .to(device) call and trust_remote_code loading as unverified outside this
+# sandbox) would raise straight out of the per-claim loop below, past the
+# assistant message that's ALREADY been persisted as "UNVERIFIED", and
+# past the UI's `except answering.AnsweringError` (main.py), crashing the
+# whole Streamlit script with a raw traceback instead of this app's own
+# "never crash the UI" standard (see generation.py/indexing.py's Groq
+# error handling for the standard this was missing). NOT_SUPPORTED is
+# already a fully legitimate, correctly-handled verdict everywhere else in
+# this function (it never raises grounding_status on its own) -- so on any
+# verifier failure, this degrades that ONE claim to "not supported" rather
+# than crashing the whole answer. A person still gets their answer; that
+# one claim just doesn't count toward GROUNDED/PARTIALLY_GROUNDED, which is
+# the honest, safe outcome when grounding genuinely couldn't be checked.
+def _safe_verify(verifier, claim: str, evidence_text: str) -> EntailmentResult:
+    try:
+        return verifier.verify(claim, evidence_text)
+    except Exception:
+        return EntailmentResult(verdict="NOT_SUPPORTED", score=0.0)
 
 
 def _build_context(evidence_rows: list[tuple]) -> str:
@@ -157,6 +182,14 @@ def answer(db: DbSession, session_id: str, question: str) -> AnsweredMessage:
         reranked = retrieve(db, session_id, question)
     except RetrievalError as exc:
         raise AnsweringError(str(exc)) from exc
+    except Exception as exc:
+        # Self-audit finding: retrieve() itself has real unguarded failure
+        # points beneath it (embedder.embed_query, the cross-encoder
+        # reranker, an unpickle of a corrupted BM25 index) that don't raise
+        # RetrievalError -- those must not reach the UI as a raw traceback
+        # either. Same "never crash, always surface a clear message"
+        # standard the Groq paths already got in generation.py/indexing.py.
+        raise AnsweringError(f"Something went wrong while searching your sources: {exc}") from exc
 
     user_order = conversations.next_message_order(db, conversation.id)
     conversations.create_message(
@@ -240,7 +273,7 @@ def answer(db: DbSession, session_id: str, question: str) -> AnsweredMessage:
         best_evidence = None
         best_result = None
         for evidence, (chunk, _candidate) in zip(evidence_records, evidence_rows):
-            result = verifier.verify(claim_for_nli, chunk.text)
+            result = _safe_verify(verifier, claim_for_nli, chunk.text)
             is_better = (
                 best_result is None
                 or (result.verdict == "ENTAILMENT" and best_result.verdict != "ENTAILMENT")
@@ -259,7 +292,7 @@ def answer(db: DbSession, session_id: str, question: str) -> AnsweredMessage:
         # this is strictly a second chance, never a way to downgrade a
         # verdict the per-passage loop already got right.
         if best_result.verdict != "ENTAILMENT":
-            combined_result = verifier.verify(claim_for_nli, verification_context)
+            combined_result = _safe_verify(verifier, claim_for_nli, verification_context)
             if combined_result.verdict == "ENTAILMENT":
                 # Still cite the single passage the claim scored highest
                 # against (best_evidence) -- that's the most useful pointer

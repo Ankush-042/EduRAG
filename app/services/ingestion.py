@@ -387,7 +387,18 @@ class SourceIngestionService:
 
     def _extract_audio(self, source: Source, job) -> None:
         sources.update_source_status(self.db, source, "EXTRACTING")
-        jobs.update_progress(self.db, job, progress=0.5, stage="EXTRACTING_AUDIO")
+        # Self-audit finding (post-Sprint-11): every progress=X value across
+        # ingestion.py/transcription.py/structuring.py/indexing.py used to
+        # be that FUNCTION's own private 0-~0.9 scale, with nothing
+        # rescaling between stages -- so the one job row the UI reads
+        # (app/ui/main.py's st.progress) visibly jumped backward at every
+        # stage boundary (e.g. 90% at the end of transcription -> 30% at
+        # the start of structuring). These are now one shared whole-
+        # pipeline percentage, monotonically increasing end to end:
+        # EXTRACTING_AUDIO 15% -> TRANSCRIBING 20% -> ... -> FINALIZING
+        # 98% -> complete_job's 100%. See each call site below/in the
+        # other three files for its place in that same scale.
+        jobs.update_progress(self.db, job, progress=0.15, stage="EXTRACTING_AUDIO")
         self.db.commit()  # release the write lock before the ffmpeg subprocess runs
 
         audio_path = (Path(settings.audio_dir) / f"{source.id}.wav").resolve()
@@ -405,4 +416,4 @@ class SourceIngestionService:
         # transcribe_source() (Sprint 2) picks up from here and carries the
         # job/status the rest of the way to PROCESSING.
         sources.update_source_status(self.db, source, "TRANSCRIBING")
-        jobs.update_progress(self.db, job, progress=0.4, stage="TRANSCRIBING")
+        jobs.update_progress(self.db, job, progress=0.20, stage="TRANSCRIBING")

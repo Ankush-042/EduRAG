@@ -47,6 +47,7 @@ from __future__ import annotations
 import concurrent.futures
 import pickle
 import re
+import threading
 from pathlib import Path
 
 from sqlalchemy.orm import Session as DbSession
@@ -71,6 +72,16 @@ _QDRANT_DIR = Path(settings.qdrant_path).resolve()
 # opened/closed per call.
 _VECTOR_STORE_CLIENT = None
 
+# Self-audit finding (post-Sprint-11): the check-then-set below had no
+# lock. ingestion.py spawns one background pipeline thread per source, so
+# two sources reaching indexing close together (a very natural thing to
+# try -- add two sources back to back) could both see
+# _VECTOR_STORE_CLIENT is None and both try to open the same local Qdrant
+# path, which Qdrant refuses to do twice concurrently -- the loser gets a
+# confusing FAILED status on a source whose content was never actually
+# the problem.
+_VECTOR_STORE_CLIENT_LOCK = threading.Lock()
+
 
 class IndexingError(Exception):
     """Raised for any indexing failure; the message is what the UI/DB shows."""
@@ -86,10 +97,14 @@ def get_vector_store_client():
     one client, opened once, avoids that entirely."""
     global _VECTOR_STORE_CLIENT
     if _VECTOR_STORE_CLIENT is None:
-        from qdrant_client import QdrantClient
+        with _VECTOR_STORE_CLIENT_LOCK:
+            # Re-check inside the lock -- another thread may have already
+            # opened the client while this thread was waiting for the lock.
+            if _VECTOR_STORE_CLIENT is None:
+                from qdrant_client import QdrantClient
 
-        _QDRANT_DIR.mkdir(parents=True, exist_ok=True)
-        _VECTOR_STORE_CLIENT = QdrantClient(path=str(_QDRANT_DIR))
+                _QDRANT_DIR.mkdir(parents=True, exist_ok=True)
+                _VECTOR_STORE_CLIENT = QdrantClient(path=str(_QDRANT_DIR))
     return _VECTOR_STORE_CLIENT
 
 
@@ -336,6 +351,16 @@ def index_source(db: DbSession, source: Source, job: ProcessingJob) -> None:
     IndexingError on any failure — callers (ingestion.py) already wrap
     this in a try/except that marks the source FAILED."""
     jobs.start_job(db, job, stage="INDEXING")
+    # Self-audit finding (post-Sprint-11): this commit used to sit after
+    # _contextualize_chunks below instead of before it. start_job() only
+    # flushes (app/db/repositories/processing_job_repository.py), so that
+    # write stayed open across the ENTIRE contextualization step -- real
+    # Groq network calls, concurrent, with retries -- reproducing the
+    # exact "hold a write transaction open across a slow operation" bug
+    # class app/db/session.py's docstring documents fixing everywhere
+    # else in this pipeline. Moved here, before any slow step, matching
+    # every other stage in this same function below.
+    db.commit()
 
     chunks = content.list_chunks_for_source(db, source.id)
     if not chunks:
@@ -350,7 +375,9 @@ def index_source(db: DbSession, source: Source, job: ProcessingJob) -> None:
 
     contextualized_texts = _contextualize_chunks(chunks, _section_for, source)
 
-    jobs.update_progress(db, job, progress=0.3, stage="EMBEDDING")
+    # Whole-pipeline percentage, not a private per-function scale -- see
+    # the matching comment in ingestion.py's _extract_audio.
+    jobs.update_progress(db, job, progress=0.85, stage="EMBEDDING")
     # Commit before embedding -- can take a real while for a full lecture's
     # worth of chunks, and (see app/db/session.py) holding this write open
     # for that whole duration is exactly what caused the live "database is
@@ -364,7 +391,7 @@ def index_source(db: DbSession, source: Source, job: ProcessingJob) -> None:
     except Exception as exc:  # sentence-transformers/torch raise their own types
         raise IndexingError(f"Embedding failed: {exc}") from exc
 
-    jobs.update_progress(db, job, progress=0.6, stage="WRITING_VECTOR_INDEX")
+    jobs.update_progress(db, job, progress=0.90, stage="WRITING_VECTOR_INDEX")
     db.commit()  # same reasoning as above -- the qdrant upsert below is a separate store, no reason to hold SQLite's writer lock through it
 
     try:
@@ -403,7 +430,7 @@ def index_source(db: DbSession, source: Source, job: ProcessingJob) -> None:
             embedding_dimension=dimension,
         )
 
-    jobs.update_progress(db, job, progress=0.85, stage="BUILDING_SPARSE_INDEX")
+    jobs.update_progress(db, job, progress=0.95, stage="BUILDING_SPARSE_INDEX")
     db.commit()
 
     try:
@@ -411,6 +438,6 @@ def index_source(db: DbSession, source: Source, job: ProcessingJob) -> None:
     except Exception as exc:  # rank_bm25/pickle raise their own types
         raise IndexingError(f"Building the keyword (BM25) index failed: {exc}") from exc
 
-    jobs.update_progress(db, job, progress=0.95, stage="FINALIZING")
+    jobs.update_progress(db, job, progress=0.98, stage="FINALIZING")
 
     sources.update_source_status(db, source, "READY")

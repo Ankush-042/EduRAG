@@ -37,6 +37,8 @@ Vectara-published model, but it's still worth knowing this is happening.
 
 from __future__ import annotations
 
+import threading
+
 from app.core.config import get_settings
 from app.core.interfaces import EntailmentResult, EntailmentVerifier
 
@@ -44,6 +46,14 @@ settings = get_settings()
 
 # Same load-once-reuse-per-process pattern as embedding.py / reranking.py.
 _MODEL_CACHE: dict[str, object] = {}
+
+# Self-audit finding (post-Sprint-11): same unlocked check-then-set race
+# as embedding.py's _MODEL_CACHE_LOCK -- see that comment for the full
+# reasoning. Doubly relevant here since this model's load path is the
+# least-verified one in the whole app (module docstring above already
+# flags trust_remote_code + .to(device) as unverified outside this
+# sandbox) -- no reason to also risk two concurrent duplicate loads.
+_MODEL_CACHE_LOCK = threading.Lock()
 
 # Vectara's own documented guideline (see module docstring) for the
 # supported-vs-hallucinated cutoff on HHEM's continuous [0, 1] score.
@@ -54,25 +64,47 @@ def _get_model(model_name: str):
     if model_name in _MODEL_CACHE:
         return _MODEL_CACHE[model_name]
 
-    from transformers import AutoModelForSequenceClassification
+    with _MODEL_CACHE_LOCK:
+        if model_name in _MODEL_CACHE:
+            return _MODEL_CACHE[model_name]
 
-    # trust_remote_code=True: HHEM ships its own predict() implementation
-    # in the model repo (it isn't a plain classification head), so this
-    # has to be enabled to load it at all.
-    model = AutoModelForSequenceClassification.from_pretrained(
-        model_name, trust_remote_code=True
-    )
-    # Same device-pinning reasoning as embedding.py/config.py's
-    # torch_model_device: keep PyTorch models off the GPU ctranslate2 is
-    # already using in this process, on Windows, to avoid a silent crash.
-    # HHEM is a standard HF PreTrainedModel under trust_remote_code, so
-    # .to(device) is expected to work the same as any other transformers
-    # model -- but this specific model/version combination hasn't been
-    # run yet outside this sandbox (no PyPI access here), so treat the
-    # first real run on your machine as the actual verification of this.
-    model = model.to(settings.torch_model_device)
-    _MODEL_CACHE[model_name] = model
-    return model
+        from transformers import AutoModelForSequenceClassification
+
+        # trust_remote_code=True: HHEM ships its own predict()
+        # implementation in the model repo (it isn't a plain
+        # classification head), so this has to be enabled to load it at
+        # all.
+        model = AutoModelForSequenceClassification.from_pretrained(
+            model_name, trust_remote_code=True
+        )
+        # Self-audit finding: a version/loader mismatch can silently
+        # resolve this to the base deberta-v2 architecture instead of
+        # HHEM's own HHEMv2ForSequenceClassification (see
+        # scripts/diagnose_hhem_load.py, written specifically to catch
+        # this) -- and a plain deberta-v2 model has no .predict() method,
+        # which verify() below calls unconditionally. Fail loudly and
+        # specifically here, at load time, rather than letting every
+        # future verify() call raise a bare AttributeError that's much
+        # harder to diagnose from answering.py three layers up.
+        if not hasattr(model, "predict"):
+            raise RuntimeError(
+                f"Loaded '{model_name}' but it has no .predict() method -- "
+                "this usually means trust_remote_code resolved to the wrong "
+                "model class (see scripts/diagnose_hhem_load.py). Grounding "
+                "verification cannot run until this is fixed."
+            )
+        # Same device-pinning reasoning as embedding.py/config.py's
+        # torch_model_device: keep PyTorch models off the GPU ctranslate2
+        # is already using in this process, on Windows, to avoid a
+        # silent crash. HHEM is a standard HF PreTrainedModel under
+        # trust_remote_code, so .to(device) is expected to work the same
+        # as any other transformers model -- but this specific
+        # model/version combination hasn't been run yet outside this
+        # sandbox (no PyPI access here), so treat the first real run on
+        # your machine as the actual verification of this.
+        model = model.to(settings.torch_model_device)
+        _MODEL_CACHE[model_name] = model
+        return model
 
 
 class NLIVerifier(EntailmentVerifier):
