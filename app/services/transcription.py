@@ -268,6 +268,153 @@ def normalize_language_hint(language: str | None) -> str | None:
     return base or None
 
 
+def _clean_token(word: str) -> str:
+    """Lowercased, punctuation-stripped form of a word, used only to
+    COMPARE words for repetition -- the original (with punctuation/case
+    intact) is always what actually gets kept in the output."""
+    return word.strip().strip(".,!?;:\"'…—-").lower()
+
+
+def find_repetition_cutoff(
+    words: list[WordTimestamp], *, min_repeat_count: int = 4, max_ngram_words: int = 6
+) -> int | None:
+    """Detects Whisper's own well-documented "runaway hallucination"
+    failure mode -- a short phrase (1-6 words) repeated back-to-back many
+    times in a row, which real speech never produces -- and returns the
+    word index where the degenerate run starts, or None if the segment
+    looks clean.
+
+    This is a last line of defense, not a replacement for the language-
+    pinning / condition_on_previous_text fixes above: those reduce how
+    often Whisper hallucinates in the first place, but a real test video
+    proved they don't eliminate it on a genuinely bad patch of audio (a
+    real English sentence dissolving into ~30 repeats of Polish filler,
+    confirmed via scripts/dump_last_answer.py -- forcing English and
+    disabling prior-text conditioning did NOT stop this exact recurrence
+    on a re-transcribe). Catching the *symptom* algorithmically, right
+    where the words are already available with timestamps, means the
+    fix holds regardless of which underlying Whisper quirk causes it on
+    any given video -- we don't have to know why to stop it polluting
+    every downstream stage (chunking, retrieval, generation, grounding).
+
+    Deliberately requires the repeats to be UNBROKEN (the same n-gram
+    immediately following itself, not just appearing several times
+    somewhere in the segment) and sets the default threshold at 4+
+    consecutive repeats -- comfortably above anything a real lecturer
+    would ever say (emphasis like "no, no, no" is 2-3 reps at most), so
+    genuine speech should never trip this, only the ~15-30x hallucinated
+    loops actually observed.
+
+    Keeps the FIRST occurrence of the phrase (it's very often genuine
+    content right before the model degenerates -- true in the real case
+    that motivated this) and marks everything from the second repeat
+    onward as the cut point."""
+    tokens = [_clean_token(w.word) for w in words]
+    n = len(tokens)
+    for ngram_len in range(1, max_ngram_words + 1):
+        i = 0
+        while i + ngram_len * 2 <= n:
+            gram = tuple(tokens[i : i + ngram_len])
+            if not any(gram):  # skip grams that are all punctuation/empty
+                i += 1
+                continue
+            repeats = 1
+            j = i + ngram_len
+            while j + ngram_len <= n and tuple(tokens[j : j + ngram_len]) == gram:
+                repeats += 1
+                j += ngram_len
+            if repeats >= min_repeat_count:
+                return i + ngram_len  # keep the first occurrence, cut the rest
+            i += 1
+    return None
+
+
+# These are Whisper's own well-documented default thresholds for its
+# internal no-speech / low-confidence segment skip (the same values
+# openai-whisper's DecodingOptions ships as defaults) -- not numbers
+# picked from scratch for this app. no_speech_prob is how likely Whisper
+# itself thinks this stretch of audio has no real speech at all (music,
+# a jingle, silence); avg_logprob is how confident the model was in the
+# tokens it actually emitted (a log-probability average, so closer to 0
+# is more confident and more negative is less). Using faster-whisper's
+# own judgment about its own output, rather than re-deriving a heuristic
+# from the text, is deliberate: it's already computed on every segment
+# whether or not we read it, and it doesn't care whether the resulting
+# hallucination happens to repeat itself or not.
+_NO_SPEECH_PROB_THRESHOLD = 0.6
+_AVG_LOGPROB_THRESHOLD = -1.0
+
+# Confirmed real-world regression (post-deploy): the first version of this
+# check had no time boundary and dropped real lecture content mid-video --
+# a normal accent, background hum, or technical jargon is enough to dip
+# Whisper's own confidence on genuine speech too, so an unbounded version
+# of this check can and did delete substantive content (an entire
+# supervised-learning explanation went missing from the index, breaking
+# retrieval for that whole topic). The ONLY case this was ever confirmed
+# against is an intro jingle/logo animation, which by definition sits at
+# the very start of a file -- so this now only ever looks at segments in
+# that window. Nothing after it, however low Whisper's confidence runs,
+# is touched by this function: nowhere near "safe" here means nowhere
+# near cheap to be wrong. A missed hallucination later in the file falls
+# through to the existing repetition-based cleanup instead of being
+# silently deleted outright.
+_LOW_CONFIDENCE_DROP_WINDOW_S = 20.0
+
+
+def is_low_confidence_segment(
+    seg,
+    *,
+    no_speech_threshold: float = _NO_SPEECH_PROB_THRESHOLD,
+    avg_logprob_threshold: float = _AVG_LOGPROB_THRESHOLD,
+    max_start_s: float = _LOW_CONFIDENCE_DROP_WINDOW_S,
+) -> bool:
+    """Catches a real gap find_repetition_cutoff can't: that filter only
+    recognizes a hallucination AFTER it settles into an unbroken repeated
+    n-gram, so a segment that hallucinates freely -- varied, wandering
+    nonsense rather than one phrase looping -- sails straight through it.
+    Confirmed directly on a real video: a segment starting at 0.0s (almost
+    certainly an intro jingle/logo animation, not speech) produced fluent-
+    looking but non-repetitive Polish gibberish, and the repetition filter
+    correctly did nothing about it because it genuinely isn't that pattern.
+
+    Scoped to the first _LOW_CONFIDENCE_DROP_WINDOW_S seconds of the file
+    ONLY (see that constant's comment) -- this is a deliberate, hard
+    boundary on top of the confidence signals, not an optimization. It
+    exists because the confidence signals alone were already proven, on
+    real audio, to not be a safe-enough basis for deleting a whole
+    segment outright by themselves.
+
+    Requires BOTH signals together, not either alone -- that's the
+    documented reason Whisper exposes two separate numbers instead of one.
+    no_speech_prob alone would false-positive on quiet-but-real speech (a
+    soft-spoken pause, audio recorded at low volume); avg_logprob alone
+    would false-positive on genuine content the model is just less sure
+    how to spell (technical jargon, names, acronyms). A segment that's
+    BOTH "probably not looking at real speech" AND "not confident in the
+    words it emitted anyway" is specifically the profile of a forced
+    guess over non-speech audio -- but even that combination showed up on
+    real speech often enough that it's only trusted within the narrow
+    intro window, never across the whole file.
+
+    Returns False (never drops anything) if either confidence field is
+    missing from the segment object, rather than guessing -- a faster-
+    whisper version or a test double that doesn't expose these fields
+    should fail open onto the existing repetition-based cleanup, not
+    silently start dropping segments it can't actually score. The same
+    fail-safe applies to a missing/unknown start time: if we can't prove
+    the segment is inside the intro window, we don't drop it, rather
+    than defaulting to "in range" -- an unknown position must never be
+    treated as a free pass to delete content."""
+    start = getattr(seg, "start", None)
+    if start is None or start >= max_start_s:
+        return False
+    no_speech_prob = getattr(seg, "no_speech_prob", None)
+    avg_logprob = getattr(seg, "avg_logprob", None)
+    if no_speech_prob is None or avg_logprob is None:
+        return False
+    return no_speech_prob >= no_speech_threshold and avg_logprob <= avg_logprob_threshold
+
+
 class WhisperTranscriber(Transcriber):
     """Concrete Transcriber (app/core/interfaces.py) backed by
     faster-whisper. Swapping ASR engines later means adding another class
@@ -277,7 +424,34 @@ class WhisperTranscriber(Transcriber):
         self._size = _model_size(model_spec)
 
     def transcribe(self, audio_path: str, language: str | None = None) -> Transcript:
-        language = normalize_language_hint(language)
+        # Real, confirmed-on-a-live-user's-database bug (the previous
+        # version of this fix only went half the distance): this used to
+        # trust an explicit-but-WRONG language hint from source metadata
+        # just because it was non-None. yt-dlp's own reported language for
+        # a video is not reliably correct -- confirmed directly against a
+        # real source in production, where yt-dlp reported "pl" for a
+        # plainly English lecture video, and Whisper dutifully decoded
+        # long stretches of clearly-English audio as Polish because it was
+        # told to. That's strictly worse than the no-hint case this
+        # function already defended against: it's not a random mid-file
+        # misfire, it's the WHOLE file being decoded in the wrong
+        # language from the start, and it silently destroyed the one
+        # sentence that explained "supervised learning" by name, breaking
+        # a real, previously-working question with no error, warning, or
+        # any signal that anything was wrong -- exactly the kind of
+        # silent failure this app's whole design (see README: "accuracy
+        # and grounding first") exists to avoid.
+        #
+        # EduRAG is locked to English-only for v1 -- an explicit,
+        # already-made scope decision (README's "Scope, on purpose"
+        # section), not a new one, and not something any per-source
+        # metadata field should ever be allowed to override. A hint that
+        # happens to already say "en" changes nothing here; a hint that
+        # says anything else is exactly the case this app was never going
+        # to support, and Whisper should never be told to try. There is
+        # no legitimate scenario, for this app as scoped today, where
+        # transcribing in anything but English is the right call.
+        language = "en"
         model, device, batched = _get_model(self._size)
 
         try:
@@ -319,19 +493,70 @@ class WhisperTranscriber(Transcriber):
         # _build_batched_pipeline) for the long-audio throughput win; same
         # weights/decode either way, so this never trades accuracy for speed.
         engine = batched if batched is not None else model
-        kwargs = {"language": language, "word_timestamps": True, "vad_filter": True}
+        kwargs = {
+            "language": language,
+            "word_timestamps": True,
+            "vad_filter": True,
+            # Same real-video finding as the language default above: the
+            # ~30x repeated foreign-language loop is the textbook Whisper
+            # "runaway hallucination" pattern -- once it produces one
+            # garbled phrase, feeding that back in as prior context (the
+            # default behavior) makes it more likely to repeat rather than
+            # recover. Turning that off is the standard, documented
+            # mitigation for exactly this failure mode; it does not touch
+            # accuracy on normal, clean speech, which never triggers it.
+            "condition_on_previous_text": False,
+        }
         if batched is not None:
             kwargs["batch_size"] = settings.asr_batch_size
         segments_iter, info = engine.transcribe(audio_path, **kwargs)
         segments = []
         for seg in segments_iter:
+            # Whole-segment confidence check -- see is_low_confidence_segment's
+            # docstring. Runs BEFORE we even bother building the words list:
+            # this is for segments Whisper itself signals low confidence on
+            # (e.g. non-speech audio at 0.0s), which need to be dropped
+            # entirely rather than cleaned up word-by-word.
+            if is_low_confidence_segment(seg):
+                print(
+                    f"[EduRAG] Dropped a whole low-confidence transcript segment at "
+                    f"~{seg.start:.1f}s (no_speech_prob={seg.no_speech_prob:.2f}, "
+                    f"avg_logprob={seg.avg_logprob:.2f}) -- Whisper's own signals say "
+                    f"this was likely non-speech audio it hallucinated text for."
+                )
+                continue
+
             words = [
                 WordTimestamp(word=w.word.strip(), start=w.start, end=w.end)
                 for w in (seg.words or [])
             ]
-            segments.append(
-                TranscriptSegment(text=seg.text.strip(), start=seg.start, end=seg.end, words=words)
-            )
+
+            # Last-line-of-defense cleanup -- see find_repetition_cutoff's
+            # docstring. Only touches a segment that actually matches the
+            # hallucination pattern; every other segment (the overwhelming
+            # majority) is completely unaffected.
+            text = seg.text.strip()
+            end = seg.end
+            if words:
+                cutoff = find_repetition_cutoff(words)
+                if cutoff is not None and cutoff < len(words):
+                    dropped = len(words) - cutoff
+                    print(
+                        f"[EduRAG] Dropped {dropped} word(s) of a hallucinated repeat-loop "
+                        f"from a transcript segment at ~{seg.start:.1f}s (kept the first "
+                        f"occurrence, cut the rest)."
+                    )
+                    words = words[:cutoff]
+                    text = " ".join(w.word for w in words).strip()
+                    end = words[-1].end if words else seg.start
+
+            if not text and not words:
+                # Nothing usable survived cleanup (a segment that was
+                # degenerate from its very first word) -- drop it entirely
+                # rather than keep an empty, zero-content segment.
+                continue
+
+            segments.append(TranscriptSegment(text=text, start=seg.start, end=end, words=words))
         return segments, info
 
 
