@@ -137,6 +137,4 @@ A few things are deliberately out of scope for v1, not oversights: no PDF/docume
 
 ---
 
-<div align="center">
-<sub>Built by Ankush — final-year B.E. Computer Engineering, AI & ML.</sub>
-</div>
+
